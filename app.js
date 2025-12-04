@@ -3,11 +3,14 @@ const knex = require('./db');
 const app = express();
 const PORT = 3000;
 const gameRoutes = require('./routes/gameRoutes');
+const userRoutes = require('./routes/userRoutes');
 
 app.use(express.json());
 
 
 app.use('/api/games', gameRoutes)
+app.use('/api/user', userRoutes)
+
 
 async function startServer() {
     try {
