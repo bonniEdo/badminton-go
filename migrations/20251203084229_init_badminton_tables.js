@@ -7,7 +7,7 @@ exports.up = function (knex) {
     return knex.schema.createTable('Games', function (table) {
         table.increments('GameId').primary();
         table.string('Title', 100).notNullable();
-        table.datetime('GameDate').notNullable();
+        table.datetime('GameDateTime').notNullable();
         table.string('Location', 100);
         table.integer('MaxPlayers').notNullable();
         table.integer('Price').defaultTo(0);

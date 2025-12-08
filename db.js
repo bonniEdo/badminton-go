@@ -15,12 +15,8 @@ const knex = require('knex')({
 });
 
 knex.raw('SELECT 1')
-    .then(() => {
-        console.log('db connected successfully');
-    })
-    .catch((err) => {
-        console.log('xxxxx db connection failed xxxxx', err);
-    });
+    .then(() => { })
+    .catch((err) => { });
 
 
 

@@ -5,6 +5,7 @@ const PORT = 3000;
 const gameRoutes = require('./routes/gameRoutes');
 const userRoutes = require('./routes/userRoutes');
 
+
 app.use(express.json());
 
 
