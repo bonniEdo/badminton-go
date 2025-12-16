@@ -10,7 +10,7 @@
 
 3. 登入 >> POST http://localhost:3000/api/user/login
 
-{
+>> {
     "email": "bonnielin@ryzo.io",
     "password": "fuco1234"
 }
