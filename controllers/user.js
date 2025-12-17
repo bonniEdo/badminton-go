@@ -106,5 +106,21 @@ const loginUser = async (req, res) => {
 };
 
 
+const logoutUser = async (req, res) => {
+    try {
+        // JWT 是無狀態的，後端其實沒東西可清
+        return res.json({
+            success: true,
+            message: '已成功登出'
+        })
+    } catch (err) {
+        return res.status(500).json({
+            success: false,
+            message: '登出失敗'
+        })
+    }
+};
 
-module.exports = { createUser, loginUser };
+
+
+module.exports = { createUser, loginUser, logoutUser };
