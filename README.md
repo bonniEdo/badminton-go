@@ -29,14 +29,18 @@
     "price": "200"
 }
 
-5. 刪除遊戲 >> DELETE http://localhost:3000/api/games/delete/:id
+
+5. 查找遊戲 >> get http://localhost:3000/api/games/activeGames
+
+
+6. 刪除遊戲 >> DELETE http://localhost:3000/api/games/delete/:id
 
 >> 塞 token
 >>  {
     "userId": "1"
 }
 
-5. 報名遊戲 >> POST http://localhost:3000/api/games/:id/join
+7. 報名遊戲 >> POST http://localhost:3000/api/games/:id/join
    
 >> 塞 token
 >>  {
@@ -46,7 +50,7 @@
 
 
 
-6. 取消報名 DELETE http://localhost:3000/api/games/:id/join
+8. 取消報名 DELETE http://localhost:3000/api/games/:id/join
    
 >> 塞 token
 >>  {
