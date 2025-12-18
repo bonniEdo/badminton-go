@@ -4,6 +4,8 @@ const app = express();
 const PORT = 3000;
 const gameRoutes = require('./routes/gameRoutes');
 const userRoutes = require('./routes/userRoutes');
+const errorHandler = require('./middlewares/error');
+const AppError = require('./utils/appError');
 const cors = require('cors');
 
 
@@ -12,6 +14,10 @@ const cors = require('cors');
 app.use(express.json());
 app.use('/api/games', gameRoutes);
 app.use('/api/user', userRoutes);
+app.all('*', (req, res, next) => {
+    throw new appError(`找不到路徑 ${req.originalUrl}`, 404);
+  });
+app.use(errorHandler);
 
 async function startServer() {
     try {

@@ -1,48 +1,21 @@
 const knex = require('../db');
 const validator = require('validator');
 
-const createGame = async (req, res) => {
-    const trx = await knex.transaction();
-    try {
+const createGame = async (req, res, next) => {
         const userId = req.user.id;
         const { title, gameDate, gameTime, location, maxPlayers, price } = req.body;
         // console.log(req.body)
         const gameDateTime = `${gameDate} ${gameTime}`;
 
-        if (!title) {
-            console.warn('缺少名稱');
-            return res.status(400).json({
-                success: false,
-                message: '缺少名稱'
-            })
-        }
-        if (!gameDate) {
-            console.warn('缺少日期');
-            return res.status(400).json({
-                success: false,
-                message: '缺少日期'
-            })
-        }
+        if (!title) throw new AppError('缺少名稱', 400);
+        if (!gameDate) throw new AppError('缺少日期', 400);
         if (!validator.isDate(gameDate, { format: 'YYYY-MM-DD', strictMode: true })) {
-            console.warn(`日期格式錯誤, ${gameDate}`);
-            return res.status(400).json({ message: '日期格式錯誤，請使用 YYYY-MM-DD 格式' });
+            throw new AppError('日期格式錯誤，請使用 YYYY-MM-DD 格式', 400);
         }
-        if (!maxPlayers) {
-            return res.status(400).json({
-                success: false,
-                message: '缺少人數上限'
-            })
-        }
-        if (!gameTime) {
-            console.warn('缺少時間');
-            return res.status(400).json({
-                success: false,
-                message: '缺少開打時間'
-            })
-        }
+        if (!maxPlayers) throw new AppError('缺少人數上限', 400);
+        if (!gameTime) throw new AppError('缺少時間', 400);
         if (!validator.isTime(gameTime, { hourFormat: 'hour24' })) {
-            console.warn(`時間格式錯誤, ${gameTime}`);
-            return res.status(400).json({ message: '日期格式錯誤，請使用24小時制 hh:mm 格式' });
+            throw new AppError('時間格式錯誤，請使用24小時制 hh:mm 格式', 400);
         }
         const existingGame = await knex('Games')
             .where({
@@ -53,55 +26,45 @@ const createGame = async (req, res) => {
             })
             .first();
         if (existingGame) {
-            return res.status(400).json({
-                success: false,
-                message: '已有同時段同地點團囉！請勿重複建立。'
-            });
+                throw new AppError('已有同時段同地點團囉！請勿重複建立。', 400);
         }
-        const [newGame] = await knex('Games')
-            .insert({
-                Title: title,
-                GameDateTime: gameDateTime,
-                Location: location,
-                MaxPlayers: maxPlayers,
-                Price: price,
-                HostID: userId,
-                IsActive: true,
-            })
-            .returning('*')
-        await trx('GamePlayers')
-            .insert({
-                GameId: newGame.GameId,
-                UserId: userId,
-                Status: 'CONFIRMED',
-                JoinedAt: knex.fn.now(),
-            });
-        await trx.commit();
-
+        const newGame = await knex.transaction(async (trx) => {
+            const [insertedGame] = await trx('Games')
+                .insert({
+                    Title: title,
+                    GameDateTime: gameDateTime,
+                    Location: location,
+                    MaxPlayers: maxPlayers,
+                    Price: price,
+                    HostID: userId,
+                    IsActive: true,
+                })
+                .returning('*');
+    
+            await trx('GamePlayers')
+                .insert({
+                    GameId: insertedGame.GameId,
+                    UserId: userId,
+                    Status: 'CONFIRMED',
+                    JoinedAt: knex.fn.now(),
+                });
+    
+            return insertedGame; 
+        });
         res.status(201).json({
             success: true,
             message: '開團成功',
             game: newGame,
         });
-    } catch (error) {
-        await trx.rollback();
-        console.error(error);
-        res.status(500).json({
-            success: false,
-            message: '意外錯誤，開團失敗歐'
-        })
-    }
-
 };
-const getGame = async (req, res) => {
+const getGame = async (req, res, next) => {
     const userId = req.user.id;
-    try {
         const activeGames = await knex('Games')
             .whereNull('CanceledAt')
-            .where(
-                { HostId: userId },
-                { IsActive: true }
-            )
+            .where({ 
+                HostId: userId ,
+                IsActive: true 
+            })
             .select(
                 'Games.GameId',
                 'Games.Title',
@@ -124,17 +87,8 @@ const getGame = async (req, res) => {
             success: true,
             data: activeGames
         });
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({
-            success: false,
-            message: '意外錯誤，無法取得您開的團'
-        })
-
-    }
 }
-const getAllGames = async (req, res) => {
-    try {
+const getAllGames = async (req, res, next) => {
         const activeGames = await knex('Games')
             .join('Users', 'Games.HostID', '=', 'Users.Id')
             .whereNull('CanceledAt')
@@ -160,19 +114,10 @@ const getAllGames = async (req, res) => {
             success: true,
             data: activeGames
         });
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({
-            success: false,
-            message: '意外錯誤，取消失敗歐'
-        })
-
-    }
 }
 
 
-const deleteGame = async (req, res) => {
-    try {
+const deleteGame = async (req, res, next) => {
         const gameId = req.params.id;
         const userId = req.user.id;
         if (!gameId) {
@@ -213,21 +158,9 @@ const deleteGame = async (req, res) => {
             message: '取消成功',
             game: updatedGame
         });
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({
-            success: false,
-            message: '意外錯誤，取消失敗歐'
-        })
-    }
-
-
 
 }
-const joinGame = async (req, res) => {
-    const trx = await knex.transaction();
-
-    try {
+const joinGame = async (req, res, next) => {
         const gameId = req.params.id;
         const userId = req.user.id;
         const phone = req.body.phone
@@ -316,18 +249,8 @@ const joinGame = async (req, res) => {
             currentPlayers: Number(finalCount)
 
         });
-
-    } catch (error) {
-        await trx.rollback(); // 失敗回滾
-        console.error(error);
-        res.status(500).json({
-            success: false,
-            message: '意外錯誤，報名失敗歐'
-        })
-    }
 }
-const getJoinedGames = async (req, res) => {
-    try {
+const getJoinedGames = async (req, res, next) => {
         const userId = req.user.id;
 
         const joinedGames = await knex('GamePlayers')
@@ -357,20 +280,10 @@ const getJoinedGames = async (req, res) => {
             success: true,
             data: joinedGames
         });
-
-    } catch (error) {
-        console.error("Get Joined Games Error:", error);
-        res.status(500).json({
-            success: false,
-            message: '意外錯誤，無法取得報名紀錄'
-        });
-    }
 };
 
-const cancelJoin = async (req, res) => {
-    const trx = await knex.transaction();
+const cancelJoin = async (req, res, next) => {
 
-    try {
         const gameId = req.params.id;
         const userId = req.user.id;
 
@@ -424,11 +337,7 @@ const cancelJoin = async (req, res) => {
             message: promoted ? '取消成功，已自動遞補 1 位候補' : '取消成功',
             promoted,
         });
-    } catch (error) {
-        await trx.rollback();
-        console.error(error);
-        return res.status(500).json({ success: false, message: '取消失敗，發生意外錯誤' });
-    }
+
 };
 
 
