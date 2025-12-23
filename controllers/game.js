@@ -3,9 +3,10 @@ const validator = require('validator');
 const AppError = require('../utils/appError');
 const createGame = async (req, res) => {
     const userId = req.user.id;
-    const { title, gameDate, gameTime, location, maxPlayers, price } = req.body;
+    const { title, gameDate, gameTime, endTime, location, maxPlayers, price } = req.body;
     // console.log(req.body)
     const gameDateTime = `${gameDate} ${gameTime}`;
+
 
     if (!title) throw new AppError('缺少名稱', 400);
     if (!gameDate) throw new AppError('缺少日期', 400);
@@ -13,10 +14,18 @@ const createGame = async (req, res) => {
         throw new AppError('日期格式錯誤，請使用 YYYY-MM-DD 格式', 400);
     }
     if (!maxPlayers) throw new AppError('缺少人數上限', 400);
-    if (!gameTime) throw new AppError('缺少時間', 400);
+    if (!gameTime) throw new AppError('缺少開始時間', 400);
     if (!validator.isTime(gameTime, { hourFormat: 'hour24' })) {
         throw new AppError('時間格式錯誤，請使用24小時制 hh:mm 格式', 400);
     }
+    if (!endTime) throw new AppError('缺少結束時間', 400);
+    if (!validator.isTime(endTime, { hourFormat: 'hour24' })) {
+        throw new AppError('時間格式錯誤，請使用24小時制 hh:mm 格式', 400);
+    }
+    if (endTime <= gameTime) {
+        throw new AppError('結束時間必須晚於開始時間', 400);
+    }
+
     const existingGame = await knex('Games')
         .where({
             HostID: userId,
@@ -33,9 +42,10 @@ const createGame = async (req, res) => {
             .insert({
                 Title: title,
                 GameDateTime: gameDateTime,
+                EndTime: endTime,
                 Location: location,
-                MaxPlayers: maxPlayers,
-                Price: price,
+                MaxPlayers: Number(maxPlayers),
+                Price: Number(price),
                 HostID: userId,
                 IsActive: true,
             })
@@ -70,6 +80,7 @@ const getGame = async (req, res) => {
             'Games.Title',
             'Games.GameDateTime',
             'Games.Location',
+            'Games.EndTime',
             'Games.Price',
             'Games.MaxPlayers',
             'Games.HostID',
@@ -97,6 +108,7 @@ const getAllGames = async (req, res, next) => {
             'Games.Title',
             'Games.GameDateTime',
             'Games.Location',
+            'Games.EndTime',
             'Games.Price',
             'Games.MaxPlayers',
             'Users.username as hostName',
@@ -163,92 +175,109 @@ const deleteGame = async (req, res) => {
 const joinGame = async (req, res, next) => {
     const gameId = req.params.id;
     const userId = req.user.id;
-    const phone = req.body.phone
+    const phone = req.body.phone;
 
-    const game = await knex('Games').where({ GameId: gameId }).first();
-    if (!game) {
-        throw new AppError('沒有此球團');
+    // 1. 開啟事務 (Transaction)
+    const trx = await knex.transaction();
 
-    }
-    if (!game.IsActive || game.CanceledAt) {
-        throw new AppError('此團已被取消');
-    }
-    if (!phone) {
-        throw new AppError('缺少電話');
-    }
+    try {
+        // 先檢查球團是否存在
+        const game = await trx('Games').where({ GameId: gameId }).first();
+        if (!game) {
+            throw new AppError('沒有此球團', 404);
+        }
+        if (!game.IsActive || game.CanceledAt) {
+            throw new AppError('此團已被取消', 400);
+        }
+        if (!phone) {
+            throw new AppError('缺少電話', 400);
+        }
 
-    // 2. 檢查是否已經有紀錄 (包含已取消的)
-    const existingRecord = await trx('GamePlayers')
-        .where({ GameId: gameId, UserId: userId })
-        .first();
-
-    // 3. 如果有紀錄，且狀態不是 CANCELED，代表重複報名
-    if (existingRecord && existingRecord.Status !== 'CANCELED') {
-        await trx.rollback();
-        throw new AppError('已經報名過囉');
-    }
-    const [{ count }] = await trx('GamePlayers')
-        .where({ GameId: gameId, Status: 'CONFIRMED' })
-        .count('* as count');
-
-    const confirmedCount = Number(count);
-    const maxPlayers = game.MaxPlayers;
-
-    let status = 'CONFIRMED';
-    let waitlistOrder = null;
-    if (confirmedCount >= maxPlayers) {
-        status = 'WAITLIST';
-
-        const [{ waitCount }] = await trx('GamePlayers')
-            .where({ GameId: gameId, Status: 'WAITLIST' })
-            .count('* as waitCount');
-
-        waitlistOrder = Number(waitCount) + 1;
-    }
-
-    let result;
-
-    if (existingRecord) {
-        [result] = await trx('GamePlayers')
+        // 2. 檢查是否已經有紀錄 (包含已取消的)
+        const existingRecord = await trx('GamePlayers')
             .where({ GameId: gameId, UserId: userId })
+            .first();
+
+        // 3. 如果有紀錄，且狀態不是 CANCELED，代表重複報名
+        if (existingRecord && existingRecord.Status !== 'CANCELED') {
+            throw new AppError('已經報名過囉', 400);
+        }
+
+        // 4. 計算目前正取人數
+        const [{ count }] = await trx('GamePlayers')
+            .where({ GameId: gameId, Status: 'CONFIRMED' })
+            .count('* as count');
+
+        const confirmedCount = Number(count);
+        const maxPlayers = game.MaxPlayers;
+
+        let status = 'CONFIRMED';
+        let waitlistOrder = null;
+
+        // 如果人數已滿，轉為候補
+        if (confirmedCount >= maxPlayers) {
+            status = 'WAITLIST';
+
+            const [{ waitCount }] = await trx('GamePlayers')
+                .where({ GameId: gameId, Status: 'WAITLIST' })
+                .count('* as waitCount');
+
+            waitlistOrder = Number(waitCount) + 1;
+        }
+
+        let result;
+
+        // 5. 執行 插入 或 更新
+        if (existingRecord) {
+            [result] = await trx('GamePlayers')
+                .where({ GameId: gameId, UserId: userId })
+                .update({
+                    Status: status,           // 改回正取或候補
+                    PhoneNumber: phone,       // 更新電話
+                    JoinedAt: knex.fn.now(),  // 更新報名時間 (視為重新排隊)
+                    CanceledAt: null          // 清除取消時間
+                })
+                .returning('*');
+        } else {
+            [result] = await trx('GamePlayers')
+                .insert({
+                    GameId: gameId,
+                    UserId: userId,
+                    PhoneNumber: phone,
+                    Status: status,
+                    JoinedAt: knex.fn.now(),
+                })
+                .returning('*');
+        }
+
+        // 6. 重新計算並更新 Games 表中的 CurrentPlayers
+        const [{ finalCount }] = await trx('GamePlayers')
+            .where({ GameId: gameId, Status: 'CONFIRMED' })
+            .count('* as finalCount');
+
+        await trx('Games')
+            .where({ GameId: gameId })
             .update({
-                Status: status,           // 改回正取或候補
-                PhoneNumber: phone,       // 更新電話
-                JoinedAt: knex.fn.now(),  // 更新報名時間 (視為重新排隊)
-                CanceledAt: null          // 清除取消時間
-            })
-            .returning('*');
-    } else {
-        [result] = await trx('GamePlayers')
-            .insert({
-                GameId: gameId,
-                UserId: userId,
-                PhoneNumber: phone,
-                Status: status,
-                JoinedAt: knex.fn.now(),
-            })
-            .returning('*');
-    }
-    const [{ finalCount }] = await trx('GamePlayers')
-        .where({ GameId: gameId, Status: 'CONFIRMED' })
-        .count('* as finalCount');
-    await trx('Games')
-        .where({ GameId: gameId })
-        .update({
-            CurrentPlayers: finalCount
+                CurrentPlayers: Number(finalCount)
+            });
+
+        // 7. 提交事務
+        await trx.commit();
+
+        res.status(201).json({
+            success: true,
+            message: status === 'CONFIRMED'
+                ? '報名成功'
+                : `名額已滿，你目前是候補第 ${waitlistOrder} 位`,
+            game: result,
+            currentPlayers: Number(finalCount)
         });
 
-    await trx.commit();
-
-    res.status(201).json({
-        success: true,
-        message: status === 'CONFIRMED'
-            ? '報名成功'
-            : `名額已滿，你目前是候補第 ${waitlistOrder} 位`,
-        game: result,
-        currentPlayers: Number(finalCount)
-
-    });
+    } catch (error) {
+        // 如果中間有任何錯誤，回滾事務，確保資料一致性
+        await trx.rollback();
+        next(error); // 交給後續的 Error Handler 處理
+    }
 }
 const getJoinedGames = async (req, res, next) => {
     const userId = req.user.id;
@@ -262,6 +291,7 @@ const getJoinedGames = async (req, res, next) => {
             'Games.Title',
             'Games.GameDateTime',
             'Games.Location',
+            'Games.EndTime',
             'Games.Price',
             'Games.MaxPlayers',
             'GamePlayers.Status as MyStatus', // 讓前端知道我是正取還是候補
@@ -283,63 +313,95 @@ const getJoinedGames = async (req, res, next) => {
 };
 
 const cancelJoin = async (req, res, next) => {
-
     const gameId = req.params.id;
     const userId = req.user.id;
 
-    const player = await trx('GamePlayers')
-        .where({ GameId: gameId, UserId: userId })
-        .whereNot('Status', 'CANCELED')
-        .first();
+    const promoted = await knex.transaction(async (trx) => {
 
-    if (!player) {
-        await trx.rollback();
-        throw new AppError('找不到報名紀錄或已取消');
-    }
+        const player = await trx('GamePlayers')
+            .where({ GameId: gameId, UserId: userId })
+            .whereNot('Status', 'CANCELED')
+            .first();
 
-    const wasConfirmed = player.Status === 'CONFIRMED';
+        if (!player) {
+            throw new AppError('找不到報名紀錄或已取消');
+        }
 
-    await trx('GamePlayers')
-        .where({ GameId: gameId, UserId: userId })
-        .update({
-            Status: 'CANCELED',
-            CanceledAt: knex.fn.now(),
-        });
+        const wasConfirmed = player.Status === 'CONFIRMED';
 
-    let promoted = null;
+        await trx('GamePlayers')
+            .where({ GameId: gameId, UserId: userId })
+            .update({
+                Status: 'CANCELED',
+                CanceledAt: knex.fn.now(),
+            });
 
-    if (wasConfirmed) {
+        if (!wasConfirmed) return null;
+
         const nextWait = await trx('GamePlayers')
             .where({ GameId: gameId, Status: 'WAITLIST' })
             .orderBy('JoinedAt', 'asc')
             .first();
 
-        if (nextWait) {
-            await trx('GamePlayers')
-                .where({ GameId: gameId, UserId: nextWait.UserId })
-                .update({
-                    Status: 'CONFIRMED',
-                    PromotedAt: knex.fn.now(),
-                });
+        if (!nextWait) return null;
 
-            promoted = {
-                userId: nextWait.UserId,
-                from: 'WAITLIST',
-                to: 'CONFIRMED',
-            };
-        }
-    }
+        await trx('GamePlayers')
+            .where({ GameId: gameId, UserId: nextWait.UserId })
+            .update({
+                Status: 'CONFIRMED',
+                PromotedAt: knex.fn.now(),
+            });
 
-    await trx.commit();
-
-    return res.status(200).json({
-        success: true,
-        message: promoted ? '取消成功，已自動遞補 1 位候補' : '取消成功',
-        promoted,
+        return {
+            userId: nextWait.UserId,
+            from: 'WAITLIST',
+            to: 'CONFIRMED',
+        };
     });
 
+    res.status(200).json({
+        success: true,
+        message: promoted
+            ? '取消成功，已自動遞補 1 位候補'
+            : '取消成功',
+        promoted,
+    });
+};
+
+const playerList = async (req, res) => {
+    // 從 URL 參數取得 GameId，並確保它是數字
+    const gameId = req.params.id;
+
+    if (!gameId) {
+        return res.status(400).json({ success: false, message: '缺少球局 ID' });
+    }
+
+
+    const players = await knex('GamePlayers')
+        // 1. Join 使用者資料表，取得報名人的名字
+        // 請確認你的 Users 表主鍵是 'Id'，名字欄位是 'Username'
+        .join('Users', 'GamePlayers.UserId', '=', 'Users.Id')
+        .select(
+            'Users.Username',      // 前端顯示的名字
+            'GamePlayers.Status',   // 狀態 (CONFIRMED / WAITLIST)
+            'GamePlayers.JoinedAt'  // 報名時間 (選填)
+        )
+        .where('GamePlayers.GameId', gameId)
+        // 2. 排除已經取消報名的人
+        .whereNull('GamePlayers.CanceledAt')
+        // 3. 按照報名時間排序 (先報名的排前面)
+        .orderBy('GamePlayers.JoinedAt', 'asc');
+
+    // 回傳資料
+    res.json({
+        success: true,
+        data: players,
+        // 額外回傳總人數，前端可以選擇性使用
+        count: players.length
+    });
 };
 
 
 
-module.exports = { createGame, getGame, getAllGames, deleteGame, joinGame, getJoinedGames, cancelJoin };
+
+module.exports = { createGame, getGame, getAllGames, deleteGame, joinGame, getJoinedGames, cancelJoin, playerList };
