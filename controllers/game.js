@@ -3,7 +3,7 @@ const validator = require('validator');
 const AppError = require('../utils/appError');
 const createGame = async (req, res) => {
     const userId = req.user.id;
-    const { title, gameDate, gameTime, endTime, location, maxPlayers, price } = req.body;
+    const { title, gameDate, gameTime, endTime, location, maxPlayers, price, notes } = req.body;
     // console.log(req.body)
     const gameDateTime = `${gameDate} ${gameTime}`;
 
@@ -48,6 +48,7 @@ const createGame = async (req, res) => {
                 Price: Number(price),
                 HostID: userId,
                 IsActive: true,
+                Notes: notes,
             })
             .returning('*');
 
@@ -84,6 +85,7 @@ const getGame = async (req, res) => {
             'Games.Price',
             'Games.MaxPlayers',
             'Games.HostID',
+            'Games.Notes',
             knex.raw(`(
                     SELECT COUNT(*) 
                     FROM GamePlayers as gp 
@@ -112,6 +114,7 @@ const getAllGames = async (req, res, next) => {
             'Games.Price',
             'Games.MaxPlayers',
             'Users.username as hostName',
+            'Games.Notes',
             knex.raw(`(
                     SELECT COUNT(*) 
                     FROM GamePlayers as gp 
@@ -294,8 +297,9 @@ const getJoinedGames = async (req, res, next) => {
             'Games.EndTime',
             'Games.Price',
             'Games.MaxPlayers',
-            'GamePlayers.Status as MyStatus', // 讓前端知道我是正取還是候補
+            'GamePlayers.Status as MyStatus',
             'GamePlayers.JoinedAt',
+            'Games.Notes',
             knex.raw(`(
                     SELECT COUNT(*) 
                     FROM GamePlayers as gp 
