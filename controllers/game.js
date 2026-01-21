@@ -2,13 +2,6 @@ const knex = require("../db");
 const validator = require("validator");
 const AppError = require("../utils/appError");
 
-const currentPlayersSubquery = () => {
-    return knex("GamePlayers")
-        .whereRaw('"GamePlayers"."GameId" = "Games"."GameId"')
-        .where("Status", "CONFIRMED")
-        .sum({ total: knex.raw('1 + "FriendCount"') })
-        .as("CurrentPlayersCount");
-};
 
 
 
@@ -82,12 +75,25 @@ const createGame = async (req, res) => {
     });
 };
 
+const currentPlayersSubquery = () => {
+    return knex("GamePlayers")
+        .whereColumn("GamePlayers.GameId", "Games.GameId")
+        .where("Status", "CONFIRMED")
+        .whereNull("GamePlayers.CanceledAt")
+        .select(knex.raw('COALESCE(SUM(1 + COALESCE("FriendCount", 0)), 0)'))
+        .as("CurrentPlayersCount");
+};
+
 const totalCountSubquery = () => {
-    return knex("Participants")
-        .whereRaw("Participants.GameId = Games.GameId")
-        .select(knex.raw("COALESCE(SUM(1 + COALESCE(FriendCount, 0)), 0)"))
+    return knex("GamePlayers")
+        .whereColumn("GamePlayers.GameId", "Games.GameId")
+        .whereNull("GamePlayers.CanceledAt")
+        .whereNot("GamePlayers.Status", "CANCELED")
+        .select(knex.raw('COALESCE(SUM(1 + COALESCE("FriendCount", 0)), 0)'))
         .as("TotalCount");
 };
+
+
 
 const getGame = async (req, res) => {
     const userId = req.user.id;
@@ -133,7 +139,8 @@ const getAllGames = async (req, res) => {
             "Games.MaxPlayers",
             "Games.Notes",
             knex.ref("Users.Username").as("hostName"), // ✅ 這裡改 Username（大寫U）
-            currentPlayersSubquery()
+            currentPlayersSubquery(),
+            totalCountSubquery()
         )
         .orderBy("Games.GameDateTime", "desc");
 
@@ -283,7 +290,8 @@ const getJoinedGames = async (req, res) => {
             "GamePlayers.JoinedAt",
             "GamePlayers.FriendCount",
             "Games.Notes",
-            currentPlayersSubquery()
+            currentPlayersSubquery(),
+            totalCountSubquery()
         )
         .orderBy("Games.GameDateTime", "desc");
 
