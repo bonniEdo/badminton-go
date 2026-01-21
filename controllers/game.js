@@ -82,6 +82,13 @@ const createGame = async (req, res) => {
     });
 };
 
+const totalCountSubquery = () => {
+    return knex("Participants")
+        .whereRaw("Participants.GameId = Games.GameId")
+        .select(knex.raw("COALESCE(SUM(1 + COALESCE(FriendCount, 0)), 0)"))
+        .as("TotalCount");
+};
+
 const getGame = async (req, res) => {
     const userId = req.user.id;
 
@@ -101,7 +108,8 @@ const getGame = async (req, res) => {
             "Games.MaxPlayers",
             "Games.HostID",
             "Games.Notes",
-            currentPlayersSubquery()
+            currentPlayersSubquery(), // 原有的（可能只算正取）
+            totalCountSubquery()      // ✅ 新增的：算所有人頭
         )
         .orderBy("Games.GameDateTime", "desc");
 
