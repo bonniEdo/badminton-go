@@ -1,7 +1,8 @@
+require('dotenv').config();
 const express = require('express');
 const knex = require('./db');
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 const gameRoutes = require('./routes/gameRoutes');
 const userRoutes = require('./routes/userRoutes');
 const errorHandler = require('./middlewares/error');
@@ -10,16 +11,19 @@ const cors = require('cors');
 
 
 app.use(cors({
-  origin: ['https://webapub.run.place', 'http://localhost:3001'],
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  credentials: true
+    origin: ['http://localhost:3001', process.env.FRONTEND_URL],
+    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    credentials: true
 }));
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 app.use('/api/games', gameRoutes);
 app.use('/api/user', userRoutes);
+app.get('/', (req, res) => {
+    res.send('🏸 羽球中毒勒戒所後端總部：運作中');
+});
 
 app.use((req, res, next) => {
-    // 使用 next 傳遞錯誤，並修正大小寫
     next(new AppError(`找不到路徑 ${req.originalUrl}`, 404));
 });
 
@@ -39,3 +43,4 @@ async function startServer() {
 }
 
 startServer();
+module.exports = app;
