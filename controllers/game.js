@@ -1,6 +1,7 @@
 const knex = require("../db");
 const validator = require("validator");
 const AppError = require("../utils/appError");
+const { GameStatus } = require('../utils/gameHelpers');
 
 
 
@@ -98,6 +99,7 @@ const totalCountSubquery = () => {
 const getGame = async (req, res) => {
     const userId = req.user.id;
 
+
     const activeGames = await knex("Games")
         .whereNull("CanceledAt")
         .where({
@@ -119,13 +121,17 @@ const getGame = async (req, res) => {
         )
         .orderBy("Games.GameDateTime", "desc");
 
+    const processedGames = GameStatus(activeGames);
+    const sortedGames = processedGames.sort((a, b) => a.isExpired - b.isExpired);
+
     res.status(200).json({
         success: true,
-        data: activeGames,
+        data: sortedGames,
     });
 };
 
 const getAllGames = async (req, res) => {
+    const userId = req.user?.id || null;
     const activeGames = await knex("Games")
         .join("Users", "Games.HostID", "Users.Id")
         .whereNull("Games.CanceledAt")
@@ -138,15 +144,25 @@ const getAllGames = async (req, res) => {
             "Games.Price",
             "Games.MaxPlayers",
             "Games.Notes",
+            knex.raw(
+                `(SELECT "FriendCount" FROM "GamePlayers" 
+                  WHERE "GamePlayers"."GameId" = "Games"."GameId" 
+                  AND "GamePlayers"."UserId" = ? 
+                  AND "GamePlayers"."Status" != 'CANCELED' 
+                  LIMIT 1) as MyFriendCount`,
+                [userId]
+            ),
+
             knex.ref("Users.Username").as("hostName"), // ✅ 這裡改 Username（大寫U）
             currentPlayersSubquery(),
             totalCountSubquery()
         )
         .orderBy("Games.GameDateTime", "desc");
-
+    const processedGames = GameStatus(activeGames);
+    const sortedGames = processedGames.sort((a, b) => a.isExpired - b.isExpired);
     res.status(200).json({
         success: true,
-        data: activeGames,
+        data: sortedGames,
     });
 };
 
@@ -198,14 +214,15 @@ const joinGame = async (req, res) => {
     const totalToJoin = 1 + friendCount;
 
     const result = await knex.transaction(async (trx) => {
+        const existingRecord = await trx("GamePlayers")
+            .where({ GameId: gameId, UserId: userId })
+            .forUpdate() // <--- 加入這個，防止同時多個 insert
+            .first();
+
         const game = await trx("Games").where({ GameId: gameId }).forUpdate().first();
         if (!game) throw new AppError("沒有此球團", 404);
         if (!game.IsActive || game.CanceledAt) throw new AppError("此團已被取消", 400);
         if (!phone) throw new AppError("缺少電話", 400);
-
-        const existingRecord = await trx("GamePlayers")
-            .where({ GameId: gameId, UserId: userId })
-            .first();
 
         if (existingRecord && existingRecord.Status !== "CANCELED") {
             throw new AppError("已經報名過囉", 400);
@@ -241,14 +258,9 @@ const joinGame = async (req, res) => {
 
         let playerRecord;
         if (existingRecord) {
-            [playerRecord] = await trx("GamePlayers")
-                .where({ GameId: gameId, UserId: userId })
-                .update(payload)
-                .returning("*");
+            await trx("GamePlayers").where({ GameId: gameId, UserId: userId }).update(payload);
         } else {
-            [playerRecord] = await trx("GamePlayers")
-                .insert({ GameId: gameId, UserId: userId, ...payload })
-                .returning("*");
+            await trx("GamePlayers").insert({ GameId: gameId, UserId: userId, ...payload });
         }
 
         const finalCountRes = await trx("GamePlayers")
@@ -277,6 +289,7 @@ const getJoinedGames = async (req, res) => {
     const joinedGames = await knex("GamePlayers")
         .join("Games", "GamePlayers.GameId", "Games.GameId")
         .where("GamePlayers.UserId", userId)
+        .whereNot("GamePlayers.Status", "CANCELED")
         .whereIn("GamePlayers.Status", ["CONFIRMED", "WAITLIST"])
         .select(
             "Games.GameId",
@@ -294,43 +307,35 @@ const getJoinedGames = async (req, res) => {
             totalCountSubquery()
         )
         .orderBy("Games.GameDateTime", "desc");
-
+    const processedGames = GameStatus(joinedGames);
+    const sortedGames = processedGames.sort((a, b) => a.isExpired - b.isExpired);
     res.status(200).json({
         success: true,
-        data: joinedGames,
+        data: sortedGames,
     });
 };
 
 const cancelJoin = async (req, res) => {
     const gameId = parseInt(req.params.id);
     const userId = req.user?.id;
-
-    if (!gameId || isNaN(gameId)) {
-        return res.status(400).json({ success: false, message: "無效的球局 ID" });
-    }
-    if (!userId) {
-        return res.status(401).json({ success: false, message: "未經授權" });
-    }
-
     const { cancelType = 'all' } = req.body;
 
+    console.log(`\n--- [DEBUG: cancelJoin] ---`);
+    console.log(`User: ${userId}, Game: ${gameId}, Type: ${cancelType}`);
+
     const result = await knex.transaction(async (trx) => {
-        const player = await trx("GamePlayers")
-            .where({ GameId: gameId, UserId: userId })
-            .first();
+        const player = await trx("GamePlayers").where({ GameId: gameId, UserId: userId }).first();
         const game = await trx("Games").where({ GameId: gameId }).forUpdate().first();
 
-        if (!player || player.Status === "CANCELED") throw new AppError("找不到報名紀錄", 404);
+        if (!player || player.Status === "CANCELED") throw new Error("找不到報名紀錄");
 
-        const oldStatus = player.Status;
+        console.log(`[DEBUG] 更新前 - 狀態: ${player.Status}, 朋友數: ${player.FriendCount}`);
+
         let message = "";
-
         if (cancelType === 'friend_only' && player.FriendCount > 0) {
             await trx("GamePlayers")
                 .where({ GameId: gameId, UserId: userId })
-                .update({
-                    FriendCount: 0,
-                });
+                .update({ FriendCount: 0 });
             message = "已取消朋友報名，保留本人名額";
         } else {
             await trx("GamePlayers")
@@ -344,35 +349,32 @@ const cancelJoin = async (req, res) => {
         }
 
         let promotedCount = 0;
+        while (true) {
+            const confRes = await trx("GamePlayers")
+                .where({ GameId: gameId, Status: "CONFIRMED" })
+                .sum({ total: trx.raw('1 + "FriendCount"') })
+                .first();
 
-        if (oldStatus === "CONFIRMED") {
-            while (true) {
-                const confRes = await trx("GamePlayers")
-                    .where({ GameId: gameId, Status: "CONFIRMED" })
-                    .sum({ total: trx.raw('1 + "FriendCount"') })
-                    .first();
+            const currentTotal = Number(confRes.total || 0);
+            const space = game.MaxPlayers - currentTotal;
 
-                const currentTotal = Number(confRes.total || 0);
-                const space = game.MaxPlayers - currentTotal;
+            if (space <= 0) break;
 
-                if (space <= 0) break;
+            const nextWait = await trx("GamePlayers")
+                .where({ GameId: gameId, Status: "WAITLIST" })
+                .orderBy("JoinedAt", "asc")
+                .first();
 
-                const nextWait = await trx("GamePlayers")
-                    .where({ GameId: gameId, Status: "WAITLIST" })
-                    .orderBy("JoinedAt", "asc")
-                    .first();
+            if (!nextWait) break;
 
-                if (!nextWait) break;
-
-                const nextSize = 1 + (nextWait.FriendCount || 0);
-                if (nextSize <= space) {
-                    await trx("GamePlayers")
-                        .where({ GameId: gameId, UserId: nextWait.UserId })
-                        .update({ Status: "CONFIRMED", PromotedAt: trx.fn.now() });
-                    promotedCount++;
-                } else {
-                    break;
-                }
+            const nextSize = 1 + (nextWait.FriendCount || 0);
+            if (nextSize <= space) {
+                await trx("GamePlayers")
+                    .where({ GameId: gameId, UserId: nextWait.UserId })
+                    .update({ Status: "CONFIRMED", PromotedAt: trx.fn.now() });
+                promotedCount++;
+            } else {
+                break;
             }
         }
 
@@ -380,21 +382,21 @@ const cancelJoin = async (req, res) => {
             .where({ GameId: gameId, Status: "CONFIRMED" })
             .sum({ total: trx.raw('1 + "FriendCount"') })
             .first();
-
         const finalTotal = Number(finalCountRes.total || 0);
         await trx("Games").where({ GameId: gameId }).update({ CurrentPlayers: finalTotal });
 
+        console.log(`[DEBUG] 更新後 - 本人狀態: ${player.Status}, 最終總人數: ${finalTotal}`);
         return { promotedCount, finalTotal, message };
     });
 
     res.status(200).json({
         success: true,
-        message: result.promotedCount > 0
-            ? `${result.message}，並自動遞補 ${result.promotedCount} 組候補`
-            : result.message,
+        message: result.promotedCount > 0 ? `${result.message}，並自動遞補 ${result.promotedCount} 組候補` : result.message,
         currentPlayers: result.finalTotal
     });
 };
+
+
 
 const playerList = async (req, res) => {
     const gameId = req.params.id;
@@ -420,6 +422,55 @@ const playerList = async (req, res) => {
     });
 };
 
+const addFriend = async (req, res) => {
+    const gameId = parseInt(req.params.id);
+    const userId = req.user?.id;
+
+
+    const result = await knex.transaction(async (trx) => {
+        const player = await trx("GamePlayers")
+            .where({ GameId: gameId, UserId: userId })
+            .forUpdate()
+            .first();
+
+        if (!player || player.Status === "CANCELED") throw new Error("尚未報名，請先報名");
+
+        if (Number(player.FriendCount || 0) >= 1) {
+            throw new Error("每人最多只能帶一位朋友 (+1)");
+        }
+
+        const newFriendCount = (player.FriendCount || 0) + 1;
+        await trx("GamePlayers")
+            .where({ GameId: gameId, UserId: userId })
+            .update({ FriendCount: 1 });
+
+        const confRes = await trx("GamePlayers")
+            .where({ GameId: gameId, Status: "CONFIRMED" })
+            .sum({ total: trx.raw('1 + "FriendCount"') })
+            .first();
+
+        const currentConfirmedTotal = Number(confRes.total || 0);
+        const game = await trx("Games").where({ GameId: gameId }).forUpdate().first();
+
+        if (player.Status === "CONFIRMED" && currentConfirmedTotal > game.MaxPlayers) {
+            console.log(`[DEBUG] 人數爆滿，將使用者 ${userId} 轉為 WAITLIST`);
+            await trx("GamePlayers").where({ GameId: gameId, UserId: userId }).update({ Status: "WAITLIST" });
+        }
+
+        const finalCountRes = await trx("GamePlayers")
+            .where({ GameId: gameId, Status: "CONFIRMED" })
+            .sum({ total: trx.raw('1 + "FriendCount"') })
+            .first();
+        const finalTotal = Number(finalCountRes.total || 0);
+        await trx("Games").where({ GameId: gameId }).update({ CurrentPlayers: finalTotal });
+
+        return { finalTotal };
+    });
+
+    res.status(200).json({ success: true, message: "已成功為朋友 +1 位", currentPlayers: result.finalTotal });
+};
+
+
 module.exports = {
     createGame,
     getGame,
@@ -429,4 +480,5 @@ module.exports = {
     getJoinedGames,
     cancelJoin,
     playerList,
+    addFriend
 };
