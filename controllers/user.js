@@ -54,7 +54,7 @@ const loginUser = async (req, res) => {
     const token = jwt.sign(
         { id: user.Id, email: user.Email, username: user.Username },
         JWT_SECRET,
-        { expiresIn: '3min' }
+        { expiresIn: '30min' }
     );
     console.log("使用帳密登入成功")
 
@@ -139,7 +139,7 @@ const lineCallback = async (req, res) => {
         const token = jwt.sign(
             { id: user.Id, email: user.Email, username: user.Username, avatarUrl: user.AvatarUrl },
             JWT_SECRET,
-            { expiresIn: '3min' }
+            { expiresIn: '30d' }
         );
         console.log("使用LINE登入成功")
 
@@ -178,7 +178,7 @@ const liffLogin = async (req, res) => {
         const token = jwt.sign(
             { id: user.Id, email: user.Email, username: user.Username, avatarUrl: user.AvatarUrl },
             process.env.JWT_SECRET,
-            { expiresIn: '3min' }
+            { expiresIn: '60d' }
         );
 
         res.json({ success: true, token, user: { id: user.Id, username: user.Username, avatarUrl: user.AvatarUrl } });
