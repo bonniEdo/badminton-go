@@ -54,15 +54,18 @@ const loginUser = async (req, res) => {
     const token = jwt.sign(
         { id: user.Id, email: user.Email, username: user.Username },
         JWT_SECRET,
-        { expiresIn: '1d' }
+        { expiresIn: '3min' }
     );
+    console.log("使用帳密登入成功")
 
     res.json({
         success: true,
         message: '登入成功',
         token,
         user: { id: user.Id, username: user.Username }
+
     });
+
 };
 
 // 修正：登出不應該 throw Error
@@ -134,10 +137,11 @@ const lineCallback = async (req, res) => {
         }
 
         const token = jwt.sign(
-            { id: user.Id, email: user.Email, username: user.Username },
+            { id: user.Id, email: user.Email, username: user.Username, avatarUrl: user.AvatarUrl },
             JWT_SECRET,
-            { expiresIn: '1d' }
+            { expiresIn: '3min' }
         );
+        console.log("使用LINE登入成功")
 
         res.redirect(`${process.env.FRONTEND_URL}/login-success?token=${token}`);
 
