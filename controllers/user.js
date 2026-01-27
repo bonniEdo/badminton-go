@@ -150,5 +150,40 @@ const lineCallback = async (req, res) => {
         res.redirect(`${process.env.FRONTEND_URL}/login?error=line_failed`);
     }
 };
+const liffLogin = async (req, res) => {
+    const { idToken } = req.body;
 
-module.exports = { createUser, loginUser, logoutUser, getLineAuthUrl, lineCallback };
+    try {
+        const response = await axios.post('https://api.line.me/oauth2/v2.1/verify',
+            new URLSearchParams({
+                id_token: idToken,
+                client_id: process.env.LINE_CHANNEL_ID,
+            })
+        );
+
+        const { sub: lineId, name, picture, email } = response.data;
+
+        let user = await knex('Users').where({ LineId: lineId }).first();
+
+        if (!user) {
+            const [newUser] = await knex('Users').insert({
+                Username: name,
+                Email: email || `${lineId}@line.com`,
+                LineId: lineId,
+                AvatarUrl: picture,
+            }).returning('*');
+            user = newUser;
+        }
+
+        const token = jwt.sign(
+            { id: user.Id, email: user.Email, username: user.Username, avatarUrl: user.AvatarUrl },
+            process.env.JWT_SECRET,
+            { expiresIn: '3min' }
+        );
+
+        res.json({ success: true, token, user: { id: user.Id, username: user.Username, avatarUrl: user.AvatarUrl } });
+    } catch (error) {
+        res.status(401).json({ success: false, message: '身份驗證失敗' });
+    }
+};
+module.exports = { createUser, loginUser, logoutUser, getLineAuthUrl, lineCallback, liffLogin };
