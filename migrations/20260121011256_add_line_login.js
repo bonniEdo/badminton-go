@@ -18,9 +18,9 @@ exports.up = function (knex) {
  */
 exports.down = function (knex) {
     return knex.schema.alterTable('Users', (table) => {
-        table.string('LineId').unique().nullable();
-        table.string('AvatarUrl').nullable();
-        table.string('Password').nullable().alter();
+        table.dropColumn('LineId')
+        table.dropColumn('AvatarUrl')
+        table.strdropColumning('Password')
     })
 
 };

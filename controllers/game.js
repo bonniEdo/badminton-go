@@ -8,7 +8,7 @@ const { GameStatus } = require('../utils/gameHelpers');
 
 const createGame = async (req, res) => {
     const userId = req.user.id;
-    const { title, gameDate, gameTime, endTime, location, maxPlayers, price, notes } = req.body;
+    const { title, gameDate, gameTime, endTime, location, maxPlayers, price, notes, phone } = req.body;
     const gameDateTime = `${gameDate} ${gameTime}`;
 
     if (!title) throw new AppError("缺少名稱", 400);
@@ -56,6 +56,7 @@ const createGame = async (req, res) => {
                 HostID: userId,
                 IsActive: true,
                 Notes: notes,
+                HostContact: phone,
             })
             .returning("*");
 
@@ -101,10 +102,8 @@ const getGame = async (req, res) => {
 
 
     const activeGames = await knex("Games")
-        .whereNull("CanceledAt")
         .where({
             HostID: userId,
-            IsActive: true,
         })
         .select(
             "Games.GameId",
@@ -116,8 +115,10 @@ const getGame = async (req, res) => {
             "Games.MaxPlayers",
             "Games.HostID",
             "Games.Notes",
-            currentPlayersSubquery(), // 原有的（可能只算正取）
-            totalCountSubquery()      // ✅ 新增的：算所有人頭
+            "Games.HostContact",
+            "Games.CanceledAt",
+            currentPlayersSubquery(),
+            totalCountSubquery()
         )
         .orderBy("Games.GameDateTime", "desc");
 
@@ -144,6 +145,7 @@ const getAllGames = async (req, res) => {
             "Games.Price",
             "Games.MaxPlayers",
             "Games.Notes",
+            "Games.HostContact",
             knex.raw(
                 `(SELECT "FriendCount" FROM "GamePlayers" 
                   WHERE "GamePlayers"."GameId" = "Games"."GameId" 
@@ -303,8 +305,10 @@ const getJoinedGames = async (req, res) => {
             "GamePlayers.JoinedAt",
             "GamePlayers.FriendCount",
             "Games.Notes",
+            knex.ref("Games.CanceledAt").as("GameCanceledAt"),
             currentPlayersSubquery(),
-            totalCountSubquery()
+            totalCountSubquery(),
+            "Games.HostContact",
         )
         .orderBy("Games.GameDateTime", "desc");
     const processedGames = GameStatus(joinedGames);
