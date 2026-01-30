@@ -62,13 +62,15 @@ const loginUser = async (req, res) => {
         success: true,
         message: '登入成功',
         token,
-        user: { id: user.Id, username: user.Username }
-
+        user: {
+            id: user.Id,
+            username: user.Username,
+            is_profile_completed: !!user.is_profile_completed,
+            badminton_level: user.badminton_level,
+        }
     });
-
 };
 
-// 修正：登出不應該 throw Error
 const logoutUser = async (req, res) => {
     res.status(200).json({
         success: true,
@@ -77,7 +79,6 @@ const logoutUser = async (req, res) => {
 };
 
 const getLineAuthUrl = (req, res) => {
-    // 產生一個隨機的暗號
     const state = crypto.randomBytes(16).toString('hex');
     const client_id = process.env.LINE_CHANNEL_ID;
     const redirect_uri = encodeURIComponent(process.env.LINE_CALLBACK_URL);
@@ -93,7 +94,6 @@ const lineCallback = async (req, res) => {
     if (!code) return res.redirect(`${process.env.FRONTEND_URL}/login?error=no_code`);
 
     try {
-        // 1. 換取 Token
         const tokenResponse = await axios.post('https://api.line.me/oauth2/v2.1/token',
             new URLSearchParams({
                 grant_type: 'authorization_code',
@@ -143,13 +143,15 @@ const lineCallback = async (req, res) => {
         );
         console.log("使用LINE登入成功")
 
-        res.redirect(`${process.env.FRONTEND_URL}/login-success?token=${token}`);
+        // ✅ 在 URL 帶上 is_profile_completed 狀態供前端判斷
+        res.redirect(`${process.env.FRONTEND_URL}/login-success?token=${token}&is_profile_completed=${!!user.is_profile_completed}`);
 
     } catch (error) {
         console.error('LINE Login Error:', error.response?.data || error.message);
         res.redirect(`${process.env.FRONTEND_URL}/login?error=line_failed`);
     }
 };
+
 const liffLogin = async (req, res) => {
     const { idToken } = req.body;
 
@@ -181,9 +183,53 @@ const liffLogin = async (req, res) => {
             { expiresIn: '60d' }
         );
 
-        res.json({ success: true, token, user: { id: user.Id, username: user.Username, avatarUrl: user.AvatarUrl } });
+        res.json({
+            success: true,
+            token,
+            user: {
+                id: user.Id,
+                username: user.Username,
+                avatarUrl: user.AvatarUrl,
+                is_profile_completed: !!user.is_profile_completed,
+                badminton_level: user.badminton_level,
+            }
+        });
     } catch (error) {
         res.status(401).json({ success: false, message: '身份驗證失敗' });
     }
 };
-module.exports = { createUser, loginUser, logoutUser, getLineAuthUrl, lineCallback, liffLogin };
+
+const rating = async (req, res) => {
+    const { years, level } = req.body;
+    const userId = req.user.id;
+
+    let levelValue = level;
+    const match = level.match(/Level\s*(\d+(-?\d+)?)/i);
+    if (match) {
+        levelValue = match[1];
+    }
+
+    try {
+        await knex('Users')
+            .where({ Id: userId })
+            .update({
+                experience_years: years,
+                badminton_level: level,
+                is_profile_completed: true, // 標記為已完成
+                play_frequency: req.body.frequency || null,
+                play_style: req.body.playStyle || null,
+            });
+
+        res.json({
+            success: true,
+            message: "診斷完畢，藥方已調配",
+            level: level,
+            numericLevel: levelValue
+        });
+    } catch (error) {
+        console.error("更新評量失敗:", error);
+        res.status(500).json({ error: "系統無法紀錄您的診斷結果" });
+    }
+};
+
+module.exports = { createUser, loginUser, logoutUser, getLineAuthUrl, lineCallback, liffLogin, rating };
