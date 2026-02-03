@@ -25,31 +25,42 @@ const checkin = async (req, res) => {
 
 const startMatch = async (req, res) => {
     const { gameId, courtNumber, players } = req.body;
-    // players 格式: { a1: player_pk_id, a2: ..., b1: ..., b2: ... }
 
-    await knex.transaction(async (trx) => {
-        // 1. 建立對戰紀錄
-        await trx('Matches').insert({
-            game_id: gameId,
-            court_number: courtNumber,
-            player_a1: players.a1,
-            player_a2: players.a2,
-            player_b1: players.b1,
-            player_b2: players.b2,
-            match_status: 'active',
-            start_time: trx.fn.now()
+    try {
+        await knex.transaction(async (trx) => {
+            const existingMatch = await trx('Matches')
+                .where({ game_id: gameId, court_number: courtNumber, match_status: 'active' })
+                .first();
+            if (existingMatch) throw new Error(`場地 ${courtNumber} 正在對戰中`);
+
+            await trx('Matches').insert({
+                game_id: gameId,
+                court_number: courtNumber,
+                player_a1: players.a1,
+                player_a2: players.a2,
+                player_b1: players.b1,
+                player_b2: players.b2,
+                match_status: 'active',
+                start_time: trx.fn.now()
+            });
+
+            const gamePlayerTableIds = [players.a1, players.a2, players.b1, players.b2];
+            await trx('GamePlayers')
+                .whereIn('Id', gamePlayerTableIds)
+                .update({ status: 'playing' });
         });
 
-        // 2. ✅ 修正點：使用 GamePlayers 的主鍵 Id 來更新狀態
-        // 之前可能誤用了 UserId，導致虛擬球員沒被正確更新
-        const gamePlayerTableIds = [players.a1, players.a2, players.b1, players.b2];
+        res.json({ success: true, message: `場地 ${courtNumber} 已開打` });
+    } catch (error) {
+        res.status(400).json({ success: false, message: error.message });
+    }
+};
 
-        await trx('GamePlayers')
-            .whereIn('Id', gamePlayerTableIds) // 👈 這裡一定要對齊資料庫的大寫 'Id'
-            .update({ status: 'playing' });
-    });
-
-    res.json({ success: true, message: `場地 ${courtNumber} 已開打` });
+// 輔助函式：將 "Level 4-5：初階" 轉換為數字 4
+const parseLevel = (levelStr) => {
+    if (!levelStr) return 1;
+    const match = levelStr.match(/\d+/);
+    return match ? parseInt(match[0], 10) : 1;
 };
 
 const getLiveStatus = async (req, res) => {
@@ -60,23 +71,43 @@ const getLiveStatus = async (req, res) => {
     }
 
     try {
+        // 1. 撈取所有已確認的球員 (包括 IsVirtual = true 的朋友)
         const players = await knex('GamePlayers')
             .join('Users', 'GamePlayers.UserId', 'Users.Id')
             .where('GamePlayers.GameId', gameId)
-            .where('GamePlayers.Status', 'CONFIRMED')
+            .where('GamePlayers.Status', 'CONFIRMED') // 只抓確認報名成功的人
             .select(
-                'GamePlayers.Id as playerId',
+                'GamePlayers.Id as playerId',   // 這是每一筆紀錄的唯一 ID (包含虛擬球員)
                 'Users.Username',
+                'Users.badminton_level',
+                'GamePlayers.FriendLevel',
                 'GamePlayers.IsVirtual',
                 'GamePlayers.status',
                 'GamePlayers.games_played'
             );
 
-        const formattedPlayers = players.map(p => ({
-            ...p,
-            displayName: p.IsVirtual ? `${p.Username} +1` : p.Username
-        }));
+        // 2. 格式化球員資料
+        const formattedPlayers = players.map(p => {
+            let finalLevel = 1;
 
+            if (p.IsVirtual) {
+                // ✅ 如果是虛擬球員（朋友），直接讀取 FriendLevel
+                finalLevel = p.FriendLevel || 1;
+            } else {
+                // ✅ 如果是本人，從字串解析等級
+                finalLevel = parseLevel(p.badminton_level);
+            }
+
+            return {
+                playerId: p.playerId,
+                displayName: p.IsVirtual ? `${p.Username} +1` : p.Username,
+                status: p.status,
+                level: finalLevel,
+                games_played: p.games_played
+            };
+        });
+
+        // 3. 撈取進行中的比賽
         const activeMatches = await knex('Matches')
             .where('game_id', gameId)
             .where('match_status', 'active')
@@ -85,7 +116,7 @@ const getLiveStatus = async (req, res) => {
         res.json({
             success: true,
             data: {
-                // ✅ 確保前端能拿到 players 與 matches 欄位
+                // 這裡的 players 已經包含所有人，直接回傳即可
                 players: formattedPlayers,
                 matches: activeMatches
             }

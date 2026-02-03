@@ -268,7 +268,7 @@ const deleteGame = async (req, res) => {
 const joinGame = async (req, res) => {
     const gameId = req.params.id;
     const userId = req.user.id;
-    const { phone, numPlayers } = req.body;
+    const { phone, numPlayers, friendLevel } = req.body; // 👈 接收前端傳來的 friendLevel
 
     const friendCount = Number(numPlayers) === 2 ? 1 : 0;
     const totalToJoin = 1 + friendCount;
@@ -287,6 +287,7 @@ const joinGame = async (req, res) => {
             throw new AppError("已經報名過囉", 400);
         }
 
+        // 統計目前已確認人數 (包含本人+朋友)
         const resCount = await trx("GamePlayers")
             .where({ GameId: gameId, Status: "CONFIRMED", IsVirtual: false })
             .sum({ total: trx.raw('1 + COALESCE("FriendCount", 0)') })
@@ -298,6 +299,7 @@ const joinGame = async (req, res) => {
         let status = "CONFIRMED";
         let waitlistOrder = null;
 
+        // 檢查是否需要候補
         if (confirmedCount + totalToJoin > maxPlayers) {
             status = "WAITLIST";
             const waitResult = await trx("GamePlayers")
@@ -316,6 +318,7 @@ const joinGame = async (req, res) => {
             check_in_at: null
         };
 
+        // 1. 處理本人紀錄 (IsVirtual: false)
         if (existingRecord) {
             await trx("GamePlayers")
                 .where({ GameId: gameId, UserId: userId, IsVirtual: false })
@@ -327,22 +330,31 @@ const joinGame = async (req, res) => {
             });
         }
 
+        // 2. 處理朋友紀錄 (IsVirtual: true)
         const existingVirtual = await trx("GamePlayers")
             .where({ GameId: gameId, UserId: userId, IsVirtual: true })
             .first();
 
         if (friendCount > 0) {
+            // ✅ 如果有帶朋友，建立或更新虛擬球員，並寫入 FriendLevel
+            const virtualData = {
+                ...commonPayload,
+                FriendCount: 0,
+                IsVirtual: true,
+                FriendLevel: friendLevel // 👈 關鍵：寫入等級
+            };
+
             if (existingVirtual) {
                 await trx("GamePlayers")
                     .where({ GameId: gameId, UserId: userId, IsVirtual: true })
-                    .update({ ...commonPayload, FriendCount: 0 });
+                    .update(virtualData);
             } else {
                 await trx("GamePlayers").insert({
-                    GameId: gameId, UserId: userId, IsVirtual: true,
-                    FriendCount: 0, ...commonPayload
+                    GameId: gameId, UserId: userId, ...virtualData
                 });
             }
         } else {
+            // 如果這次報名沒帶朋友，但以前有，則將舊的朋友紀錄取消
             if (existingVirtual) {
                 await trx("GamePlayers")
                     .where({ GameId: gameId, UserId: userId, IsVirtual: true })
@@ -350,9 +362,12 @@ const joinGame = async (req, res) => {
             }
         }
 
+        // 3. 更新 Games 表中的目前總人數
+        // 因為現在本人跟虛擬球員是拆開的兩行資料，直接計算 Status 為 CONFIRMED 的行數即可
         const finalCountRes = await trx("GamePlayers")
             .where({ GameId: gameId, Status: "CONFIRMED" })
             .count("* as total")
+            .first();
 
         const finalTotal = Number(finalCountRes.total || 0);
         await trx("Games").where({ GameId: gameId }).update({ CurrentPlayers: finalTotal });
@@ -529,15 +544,16 @@ const playerList = async (req, res) => {
 const addFriend = async (req, res) => {
     const gameId = parseInt(req.params.id);
     const userId = req.user?.id;
-
-    console.log("--- 進入 addFriend 流程 ---");
-    console.log(`GameId: ${gameId}, UserId: ${userId}`);
+    // 1. 從 body 接收朋友的等級 (應該是 1-18 的數字)
+    const { friendLevel } = req.body;
 
     const result = await knex.transaction(async (trx) => {
         const player = await trx("GamePlayers")
             .where({ GameId: gameId, UserId: userId, IsVirtual: false })
             .forUpdate()
             .first();
+
+        if (!player) throw new Error("找不到您的報名紀錄");
 
         let initialStatus = "waiting_checkin";
         let initialCheckInAt = null;
@@ -552,10 +568,10 @@ const addFriend = async (req, res) => {
             PhoneNumber: player.PhoneNumber,
             FriendCount: 0,
             IsVirtual: true,
+            FriendLevel: friendLevel,
             JoinedAt: trx.fn.now(),
             status: initialStatus,
             check_in_at: initialCheckInAt,
-            CanceledAt: null
         };
 
         const existingVirtual = await trx("GamePlayers")
@@ -564,7 +580,7 @@ const addFriend = async (req, res) => {
 
         if (existingVirtual) {
             await trx("GamePlayers")
-                .where({ GameId: gameId, UserId: userId, IsVirtual: true })
+                .where({ Id: existingVirtual.Id })
                 .update(virtualPayload);
         } else {
             await trx("GamePlayers").insert({
@@ -573,6 +589,11 @@ const addFriend = async (req, res) => {
                 ...virtualPayload
             });
         }
+
+        // 更新本人的 FriendCount 為 1 (代表帶了一個人)
+        await trx("GamePlayers")
+            .where({ Id: player.Id })
+            .update({ FriendCount: 1 });
 
         const confRes = await trx("GamePlayers")
             .where({ GameId: gameId, Status: "CONFIRMED", IsVirtual: false })
@@ -597,7 +618,7 @@ const addFriend = async (req, res) => {
 
     res.status(200).json({
         success: true,
-        message: "已成功為朋友 +1 位",
+        message: "已成功為朋友 +1 位，並宣告其程度",
         currentPlayers: result.finalTotal
     });
 };
