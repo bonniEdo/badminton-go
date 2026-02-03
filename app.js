@@ -5,6 +5,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const gameRoutes = require('./routes/gameRoutes');
 const userRoutes = require('./routes/userRoutes');
+const matchRoutes = require('./routes/matchRoutes');
 const errorHandler = require('./middlewares/error');
 const AppError = require('./utils/appError');
 const cors = require('cors');
@@ -19,6 +20,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use('/api/games', gameRoutes);
 app.use('/api/user', userRoutes);
+app.use('/api/match', matchRoutes);
 app.get('/', (req, res) => {
     res.send('🏸 羽球中毒勒戒所後端總部：運作中');
 });

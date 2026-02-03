@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { createGame, getGame, getAllGames, deleteGame, joinGame, getJoinedGames, cancelJoin, playerList, addFriend } = require('../controllers/game')
+const { createGame, getGame, getAllGames, deleteGame, joinGame, getJoinedGames, cancelJoin, playerList, addFriend, getGameById } = require('../controllers/game')
 const verifyToken = require('../middlewares/auth');
 
 
@@ -21,6 +21,8 @@ router.get('/:id/players', verifyToken, playerList);
 router.get('/joined', verifyToken, getJoinedGames)
 router.delete('/:id/join', verifyToken, cancelJoin);
 router.post('/:id/add-friend', verifyToken, addFriend);
+router.get('/:id', verifyToken, getGameById)
+
 
 
 
