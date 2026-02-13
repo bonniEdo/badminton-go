@@ -18,96 +18,29 @@ const locationSelect = knex.raw(`
 `);
 
 
-// const createGame = async (req, res) => {
-//     const userId = req.user.id;
-//     const { title, gameDate, gameTime, endTime, location, maxPlayers, price, notes, phone } = req.body;
-//     const gameDateTime = `${gameDate} ${gameTime}`;
-
-//     if (!title) throw new AppError("缺少名稱", 400);
-//     if (!gameDate) throw new AppError("缺少日期", 400);
-//     if (!validator.isDate(gameDate, { format: "YYYY-MM-DD", strictMode: true })) {
-//         throw new AppError("日期格式錯誤，請使用 YYYY-MM-DD 格式", 400);
-//     }
-//     if (!maxPlayers) throw new AppError("缺少人數上限", 400);
-
-//     if (!gameTime) throw new AppError("缺少開始時間", 400);
-//     if (!validator.isTime(gameTime, { hourFormat: "hour24" })) {
-//         throw new AppError("時間格式錯誤，請使用24小時制 hh:mm 格式", 400);
-//     }
-
-//     if (!endTime) throw new AppError("缺少結束時間", 400);
-//     if (!validator.isTime(endTime, { hourFormat: "hour24" })) {
-//         throw new AppError("時間格式錯誤，請使用24小時制 hh:mm 格式", 400);
-//     }
-//     if (endTime <= gameTime) {
-//         throw new AppError("結束時間必須晚於開始時間", 400);
-//     }
-
-//     const existingGame = await knex("Games")
-//         .where({
-//             HostID: userId,
-//             GameDateTime: gameDateTime,
-//             Location: location,
-//             IsActive: true,
-//         })
-//         .first();
-
-//     if (existingGame) {
-//         throw new AppError("已有同時段同地點團囉！請勿重複建立。", 400);
-//     }
-
-//     const newGame = await knex.transaction(async (trx) => {
-//         const [insertedGame] = await trx("Games")
-//             .insert({
-//                 Title: title,
-//                 GameDateTime: gameDateTime,
-//                 EndTime: endTime,
-//                 Location: location,
-//                 MaxPlayers: Number(maxPlayers),
-//                 Price: Number(price),
-//                 HostID: userId,
-//                 IsActive: true,
-//                 Notes: notes,
-//                 HostContact: phone,
-//             })
-//             .returning("*");
-
-//         await trx("GamePlayers").insert({
-//             GameId: insertedGame.GameId,
-//             UserId: userId,
-//             Status: "CONFIRMED",
-//             JoinedAt: knex.fn.now(),
-//         });
-
-//         return insertedGame;
-//     });
-
-//     res.status(201).json({
-//         success: true,
-//         message: "開團成功",
-//         game: newGame,
-//     });
-// };
 const createGame = async (req, res) => {
     const userId = req.user.id;
     const {
         title, gameDate, gameTime, endTime, location,
-        courtNumber, courtCount, // 新增
+        courtNumber, courtCount,
         maxPlayers, price, notes, phone
     } = req.body;
+
+    const trimmedLocation = location ? location.trim() : "";
 
     const gameDateTime = `${gameDate} ${gameTime}`;
     const existingGame = await knex("Games")
         .where({
             HostID: userId,
             GameDateTime: gameDateTime,
-            Location: location,
+            Location: trimmedLocation, // 使用去空白後的地址
             CourtNumber: courtNumber || null,
             IsActive: true,
         })
         .first();
 
     if (existingGame) {
+        // 如果你希望更寬鬆，這裡可以移除這項檢查，或保留
         throw new AppError("已有同時段同地點同場地的團囉！", 400);
     }
 
@@ -117,7 +50,7 @@ const createGame = async (req, res) => {
                 Title: title,
                 GameDateTime: gameDateTime,
                 EndTime: endTime,
-                Location: location,
+                Location: trimmedLocation, // 存入資料庫
                 CourtNumber: courtNumber,
                 CourtCount: Number(courtCount) || 1,
                 MaxPlayers: Number(maxPlayers),
@@ -141,7 +74,6 @@ const createGame = async (req, res) => {
 
     res.status(201).json({ success: true, message: "開團成功", game: newGame });
 };
-
 const currentPlayersSubquery = () => {
     return knex("GamePlayers")
         .whereColumn("GamePlayers.GameId", "Games.GameId")
@@ -268,8 +200,7 @@ const deleteGame = async (req, res) => {
 const joinGame = async (req, res) => {
     const gameId = req.params.id;
     const userId = req.user.id;
-    const { phone, numPlayers, friendLevel } = req.body; // 👈 接收前端傳來的 friendLevel
-
+    const { phone, numPlayers, friendLevel } = req.body;
     const friendCount = Number(numPlayers) === 2 ? 1 : 0;
     const totalToJoin = 1 + friendCount;
 
@@ -287,7 +218,6 @@ const joinGame = async (req, res) => {
             throw new AppError("已經報名過囉", 400);
         }
 
-        // 統計目前已確認人數 (包含本人+朋友)
         const resCount = await trx("GamePlayers")
             .where({ GameId: gameId, Status: "CONFIRMED", IsVirtual: false })
             .sum({ total: trx.raw('1 + COALESCE("FriendCount", 0)') })
@@ -299,7 +229,6 @@ const joinGame = async (req, res) => {
         let status = "CONFIRMED";
         let waitlistOrder = null;
 
-        // 檢查是否需要候補
         if (confirmedCount + totalToJoin > maxPlayers) {
             status = "WAITLIST";
             const waitResult = await trx("GamePlayers")
@@ -330,18 +259,16 @@ const joinGame = async (req, res) => {
             });
         }
 
-        // 2. 處理朋友紀錄 (IsVirtual: true)
         const existingVirtual = await trx("GamePlayers")
             .where({ GameId: gameId, UserId: userId, IsVirtual: true })
             .first();
 
         if (friendCount > 0) {
-            // ✅ 如果有帶朋友，建立或更新虛擬球員，並寫入 FriendLevel
             const virtualData = {
                 ...commonPayload,
                 FriendCount: 0,
                 IsVirtual: true,
-                FriendLevel: friendLevel // 👈 關鍵：寫入等級
+                FriendLevel: friendLevel
             };
 
             if (existingVirtual) {
@@ -354,7 +281,6 @@ const joinGame = async (req, res) => {
                 });
             }
         } else {
-            // 如果這次報名沒帶朋友，但以前有，則將舊的朋友紀錄取消
             if (existingVirtual) {
                 await trx("GamePlayers")
                     .where({ GameId: gameId, UserId: userId, IsVirtual: true })
@@ -362,8 +288,6 @@ const joinGame = async (req, res) => {
             }
         }
 
-        // 3. 更新 Games 表中的目前總人數
-        // 因為現在本人跟虛擬球員是拆開的兩行資料，直接計算 Status 為 CONFIRMED 的行數即可
         const finalCountRes = await trx("GamePlayers")
             .where({ GameId: gameId, Status: "CONFIRMED" })
             .count("* as total")
@@ -544,7 +468,6 @@ const playerList = async (req, res) => {
 const addFriend = async (req, res) => {
     const gameId = parseInt(req.params.id);
     const userId = req.user?.id;
-    // 1. 從 body 接收朋友的等級 (應該是 1-18 的數字)
     const { friendLevel } = req.body;
 
     const result = await knex.transaction(async (trx) => {
@@ -590,7 +513,6 @@ const addFriend = async (req, res) => {
             });
         }
 
-        // 更新本人的 FriendCount 為 1 (代表帶了一個人)
         await trx("GamePlayers")
             .where({ Id: player.Id })
             .update({ FriendCount: 1 });
@@ -638,7 +560,7 @@ const getGameById = async (req, res) => {
                 "Price",
                 "MaxPlayers",
                 "Notes",
-                "CourtCount",  // 這很重要，Live 看板用來決定開幾個場
+                "CourtCount",
                 "CourtNumber",
                 "HostContact"
             )
