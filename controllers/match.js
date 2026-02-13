@@ -1,4 +1,10 @@
 const knex = require('../db');
+
+const ensureNumber = (val) => {
+    const num = parseFloat(val);
+    return isNaN(num) ? 1.0 : num;
+};
+
 const checkin = async (req, res) => {
     const { gameId } = req.body;
     const userId = req.user?.id || req.user?.UserId;
@@ -19,9 +25,9 @@ const checkin = async (req, res) => {
 
     res.json({
         success: true,
-        message: `簽到成功，已為您及朋友(共 ${updatedCount} 位)簽下場蹤`
+        message: '簽到成功，已為您及朋友簽下場蹤'
     });
-}
+};
 
 const startMatch = async (req, res) => {
     const { gameId, courtNumber, players } = req.body;
@@ -56,106 +62,136 @@ const startMatch = async (req, res) => {
     }
 };
 
-// 輔助函式：將 "Level 4-5：初階" 轉換為數字 4
-const parseLevel = (levelStr) => {
-    if (!levelStr) return 1;
-    const match = levelStr.match(/\d+/);
-    return match ? parseInt(match[0], 10) : 1;
-};
-
 const getLiveStatus = async (req, res) => {
     const { gameId } = req.params;
-
-    if (!gameId || gameId === 'undefined') {
-        return res.status(400).json({ success: false, message: "GameId is required" });
-    }
+    if (!gameId || gameId === 'undefined') return res.status(400).json({ success: false, message: "GameId is required" });
 
     try {
-        // 1. 撈取所有已確認的球員 (包括 IsVirtual = true 的朋友)
         const players = await knex('GamePlayers')
-            .join('Users', 'GamePlayers.UserId', 'Users.Id')
+            .leftJoin('Users', 'GamePlayers.UserId', 'Users.Id')
             .where('GamePlayers.GameId', gameId)
-            .where('GamePlayers.Status', 'CONFIRMED') // 只抓確認報名成功的人
+            .whereIn('GamePlayers.Status', ['CONFIRMED', 'JOINED'])
             .select(
-                'GamePlayers.Id as playerId',   // 這是每一筆紀錄的唯一 ID (包含虛擬球員)
+                'GamePlayers.Id as playerId',
                 'Users.Username',
                 'Users.badminton_level',
+                'Users.verified_matches',
                 'GamePlayers.FriendLevel',
                 'GamePlayers.IsVirtual',
                 'GamePlayers.status',
-                'GamePlayers.games_played'
+                'GamePlayers.games_played',
+                'GamePlayers.check_in_at'
             );
 
-        // 2. 格式化球員資料
-        const formattedPlayers = players.map(p => {
-            let finalLevel = 1;
+        const formattedPlayers = players.map(p => ({
+            playerId: p.playerId,
+            displayName: p.IsVirtual ? `${p.Username} +1` : p.Username,
+            status: p.status,
+            level: p.IsVirtual ? ensureNumber(p.FriendLevel) : ensureNumber(p.badminton_level),
+            games_played: p.games_played,
+            verified_matches: p.verified_matches || 0, // 傳回前端判定勾勾
+            check_in_at: p.check_in_at // 傳回前端判定排序
+        }));
 
-            if (p.IsVirtual) {
-                // ✅ 如果是虛擬球員（朋友），直接讀取 FriendLevel
-                finalLevel = p.FriendLevel || 1;
-            } else {
-                // ✅ 如果是本人，從字串解析等級
-                finalLevel = parseLevel(p.badminton_level);
-            }
+        const activeMatches = await knex('Matches').where({ game_id: gameId, match_status: 'active' }).select('*');
 
-            return {
-                playerId: p.playerId,
-                displayName: p.IsVirtual ? `${p.Username} +1` : p.Username,
-                status: p.status,
-                level: finalLevel,
-                games_played: p.games_played
-            };
-        });
-
-        // 3. 撈取進行中的比賽
-        const activeMatches = await knex('Matches')
-            .where('game_id', gameId)
-            .where('match_status', 'active')
-            .select('*');
-
-        res.json({
-            success: true,
-            data: {
-                // 這裡的 players 已經包含所有人，直接回傳即可
-                players: formattedPlayers,
-                matches: activeMatches
-            }
-        });
+        res.json({ success: true, data: { players: formattedPlayers, matches: activeMatches } });
     } catch (error) {
-        console.error("SQL Error:", error.message);
         res.status(500).json({ success: false, error: error.message });
     }
 };
 
 const finishMatch = async (req, res) => {
-    const { matchId } = req.body;
+    const { matchId, winner } = req.body;
 
-    await knex.transaction(async (trx) => {
-        // 1. 這裡也要注意，Matches 表的 ID 是小寫還是大寫？ 
-        // 根據你之前的 migration，Matches 應該是小寫 id
-        const match = await trx('Matches').where({ id: matchId }).first();
-        if (!match) throw new Error("找不到比賽紀錄");
+    try {
+        await knex.transaction(async (trx) => {
+            const match = await trx('Matches').where({ id: matchId }).first();
+            if (!match) throw new Error("找不到比賽紀錄");
 
-        const playerIds = [match.player_a1, match.player_a2, match.player_b1, match.player_b2];
+            const playerIds = [match.player_a1, match.player_a2, match.player_b1, match.player_b2];
 
-        // A. 更新比賽狀態
-        await trx('Matches').where({ id: matchId }).update({
-            match_status: 'finished',
-            end_time: trx.fn.now()
+            const playerDetails = await trx('GamePlayers')
+                .leftJoin('Users', 'GamePlayers.UserId', 'Users.Id')
+                .whereIn('GamePlayers.Id', playerIds)
+                .select(
+                    'GamePlayers.Id',
+                    'GamePlayers.UserId',
+                    'GamePlayers.IsVirtual',
+                    'GamePlayers.FriendLevel',
+                    'Users.badminton_level',
+                    'Users.verified_matches'
+                );
+
+            if (playerDetails.length !== 4) {
+                console.error(`Match ${matchId} 球員資料不齊全, 僅抓到 ${playerDetails.length} 筆`);
+            }
+
+            // 2. 統計實際的朋友數量
+            const virtualCount = playerDetails.filter(p => !!p.IsVirtual).length;
+            let isGraded = false;
+
+            // 3. 朋友數量 < 2 (0 或 1 位朋友) 時才計算
+            if ((winner === 'A' || winner === 'B') && virtualCount < 2) {
+                isGraded = true;
+                const pMap = {};
+                playerDetails.forEach(p => {
+                    pMap[p.Id] = {
+                        level: !!p.IsVirtual ? ensureNumber(p.FriendLevel) : ensureNumber(p.badminton_level),
+                        isVirtual: !!p.IsVirtual,
+                        userId: p.UserId
+                    };
+                });
+
+                const ratingA = (pMap[match.player_a1].level + pMap[match.player_a2].level) / 2;
+                const ratingB = (pMap[match.player_b1].level + pMap[match.player_b2].level) / 2;
+
+                const K = 0.5;
+                const DIVISOR = 5;
+                const expectedA = 1 / (1 + Math.pow(10, (ratingB - ratingA) / DIVISOR));
+                const scoreA = (winner === 'A') ? 1 : 0;
+
+                const changeA = K * (scoreA - expectedA);
+                const changeB = -changeA;
+
+                for (let pid of playerIds) {
+                    const p = pMap[pid];
+
+                    if (p.isVirtual) continue;
+
+                    const change = (pid === match.player_a1 || pid === match.player_a2) ? changeA : changeB;
+                    const newLevel = Math.max(1.0, parseFloat((p.level + change).toFixed(2)));
+
+                    await trx('Users').where({ Id: p.userId }).update({
+                        badminton_level: newLevel,
+                        verified_matches: trx.raw('verified_matches + 1')
+                    });
+                }
+            }
+
+            await trx('Matches').where({ id: matchId }).update({
+                match_status: 'finished',
+                winner: winner,
+                end_time: trx.fn.now()
+            });
+
+            await trx('GamePlayers')
+                .whereIn('Id', playerIds)
+                .update({ status: 'idle', last_end_time: trx.fn.now() })
+                .increment('games_played', 1);
+
+            res.json({
+                success: true,
+                message: isGraded
+                    ? '戰報錄入成功，會員戰力與認證進度已更新'
+                    : (virtualCount >= 2 ? '朋友人數過多 (>=2)，本局不計入診斷認證' : '對戰已結束 (未計分)')
+            });
         });
 
-        // B. 將 4 位球員放回「休息區」
-        await trx('GamePlayers')
-            // ✅ 修正點：將小寫 'id' 改成大寫 'Id' (對齊你的資料庫欄位)
-            .whereIn('Id', playerIds)
-            .update({
-                status: 'idle',
-                last_end_time: trx.fn.now()
-            })
-            .increment('games_played', 1);
-    });
-
-    res.json({ success: true, message: '對戰結束，球員已回歸休息區' });
+    } catch (error) {
+        console.error("FinishMatch Error:", error);
+        res.status(500).json({ success: false, message: error.message });
+    }
 };
 
 module.exports = { checkin, startMatch, getLiveStatus, finishMatch };
