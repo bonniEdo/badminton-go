@@ -141,6 +141,7 @@ const getAllGames = async (req, res) => {
             "Games.Price",
             "Games.MaxPlayers",
             "Games.Notes",
+            "Games.HostID",
             "Games.HostContact",
             knex.raw(
                 `(SELECT "FriendCount" FROM "GamePlayers" 
