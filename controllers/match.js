@@ -243,4 +243,36 @@ const getMyHistory = async (req, res) => {
     res.json({ success: true, data: formattedHistory });
 };
 
-module.exports = { checkin, startMatch, getLiveStatus, finishMatch, getMyHistory };
+const hostCheckin = async (req, res) => {
+    const { gameId, playerId } = req.body;
+    const hostUserId = req.user?.id || req.user?.UserId;
+
+    try {
+        const game = await knex('Games').where({ GameId: gameId }).select('HostID').first();
+        if (!game || game.HostID !== hostUserId) {
+            return res.status(403).json({ success: false, message: '僅團主可執行此操作' });
+        }
+
+        const targetPlayer = await knex('GamePlayers')
+            .where({ Id: playerId, GameId: gameId })
+            .whereNot('Status', 'CANCELED')
+            .select('UserId')
+            .first();
+
+        if (!targetPlayer) {
+            return res.status(404).json({ success: false, message: '找不到該掛號資訊' });
+        }
+
+        const updatedCount = await knex('GamePlayers')
+            .where({ GameId: gameId, UserId: targetPlayer.UserId })
+            .whereNot('Status', 'CANCELED')
+            .update({ status: 'idle', check_in_at: knex.fn.now() });
+
+        res.json({ success: true, message: `已為該病友報到 (${updatedCount} 筆更新)` });
+    } catch (err) {
+        console.error('hostCheckin error:', err);
+        res.status(500).json({ success: false, message: '報到失敗' });
+    }
+};
+
+module.exports = { checkin, hostCheckin, startMatch, getLiveStatus, finishMatch, getMyHistory };
