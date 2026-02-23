@@ -2,6 +2,7 @@ const knex = require("../db");
 const validator = require("validator");
 const AppError = require("../utils/appError");
 const { GameStatus } = require('../utils/gameHelpers');
+const { broadcastToGame } = require('../wsServer');
 
 const locationSelect = knex.raw(`
     "Games"."Location" || 
@@ -597,9 +598,21 @@ const markPaid = async (req, res) => {
         if (!player) return res.status(404).json({ success: false, message: "找不到該掛號者" });
 
         const newPaidAt = player.paid_at ? null : knex.fn.now();
-        await knex("GamePlayers").where({ Id: playerId }).update({ paid_at: newPaidAt });
+        const updateFields = { paid_at: newPaidAt };
 
-        res.json({ success: true, paid: !player.paid_at });
+        let checkedIn = false;
+        if (!player.paid_at && player.status === 'waiting_checkin') {
+            await knex("GamePlayers")
+                .where({ GameId: gameId, UserId: player.UserId, status: 'waiting_checkin' })
+                .whereNot('Status', 'CANCELED')
+                .update({ status: 'idle', check_in_at: knex.fn.now() });
+            checkedIn = true;
+        }
+
+        await knex("GamePlayers").where({ Id: playerId }).update(updateFields);
+
+        broadcastToGame(gameId);
+        res.json({ success: true, paid: !player.paid_at, checkedIn });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }

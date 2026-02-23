@@ -1,4 +1,5 @@
 const knex = require('../db');
+const { broadcastToGame } = require('../wsServer');
 
 const ensureNumber = (val) => {
     const num = parseFloat(val);
@@ -12,7 +13,8 @@ const checkin = async (req, res) => {
     const updatedCount = await knex('GamePlayers')
         .where({
             GameId: gameId,
-            UserId: userId
+            UserId: userId,
+            status: 'waiting_checkin'
         })
         .update({
             status: 'idle',
@@ -23,6 +25,7 @@ const checkin = async (req, res) => {
         return res.status(404).json({ success: false, message: '找不到掛號資訊' });
     }
 
+    broadcastToGame(gameId);
     res.json({
         success: true,
         message: '報到成功，已為您及同伴簽下場蹤'
@@ -56,6 +59,7 @@ const startMatch = async (req, res) => {
                 .update({ status: 'playing' });
         });
 
+        broadcastToGame(gameId);
         res.json({ success: true, message: `場地 ${courtNumber} 已開打` });
     } catch (error) {
         res.status(400).json({ success: false, message: error.message });
@@ -187,6 +191,7 @@ const finishMatch = async (req, res) => {
             .update({ status: 'idle', last_end_time: trx.fn.now() })
             .increment('games_played', 1);
 
+        broadcastToGame(match.game_id);
         res.json({
             success: true,
             message: isGraded
@@ -264,10 +269,11 @@ const hostCheckin = async (req, res) => {
         }
 
         const updatedCount = await knex('GamePlayers')
-            .where({ GameId: gameId, UserId: targetPlayer.UserId })
+            .where({ GameId: gameId, UserId: targetPlayer.UserId, status: 'waiting_checkin' })
             .whereNot('Status', 'CANCELED')
             .update({ status: 'idle', check_in_at: knex.fn.now() });
 
+        broadcastToGame(gameId);
         res.json({ success: true, message: `已為該病友報到 (${updatedCount} 筆更新)` });
     } catch (err) {
         console.error('hostCheckin error:', err);

@@ -1,7 +1,9 @@
 require('dotenv').config();
+const http = require('http');
 const express = require('express');
 const knex = require('./db');
 const app = express();
+const server = http.createServer(app);
 const PORT = process.env.PORT || 3000;
 const gameRoutes = require('./routes/gameRoutes');
 const userRoutes = require('./routes/userRoutes');
@@ -9,6 +11,7 @@ const matchRoutes = require('./routes/matchRoutes');
 const errorHandler = require('./middlewares/error');
 const AppError = require('./utils/appError');
 const cors = require('cors');
+const { initWebSocket } = require('./wsServer');
 
 
 app.use(cors({
@@ -36,7 +39,8 @@ async function startServer() {
         await knex.raw('SELECT 1');
         console.log('-------------db connected successfully-------------');
 
-        app.listen(PORT, () => {
+        initWebSocket(server);
+        server.listen(PORT, () => {
             console.log(`🏸 羽球勒戒所系統啟動中：http://localhost:${PORT}`);
         });
     } catch (err) {
