@@ -104,7 +104,13 @@ const getLiveStatus = async (req, res) => {
 
     const activeMatches = await knex('Matches').where({ game_id: gameId, match_status: 'active' }).select('*');
 
-    res.json({ success: true, data: { players: formattedPlayers, matches: activeMatches } });
+    const userId = req.user?.id;
+    const myEntry = userId ? formattedPlayers.find(p => {
+        const raw = players.find(r => r.playerId === p.playerId);
+        return raw && !raw.IsVirtual && raw.UserId === userId;
+    }) : null;
+
+    res.json({ success: true, data: { players: formattedPlayers, matches: activeMatches, myPlayerId: myEntry?.playerId || null } });
 };
 
 const finishMatch = async (req, res) => {
