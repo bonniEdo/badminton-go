@@ -66,30 +66,40 @@ const getLiveStatus = async (req, res) => {
     const { gameId } = req.params;
     if (!gameId || gameId === 'undefined') return res.status(400).json({ success: false, message: "GameId is required" });
 
+    const game = await knex('Games').where({ GameId: gameId }).select('HostID').first();
+    const hostId = game ? game.HostID : null;
+
     const players = await knex('GamePlayers')
         .leftJoin('Users', 'GamePlayers.UserId', 'Users.Id')
         .where('GamePlayers.GameId', gameId)
-        .whereIn('GamePlayers.Status', ['CONFIRMED', 'JOINED'])
+        .whereNull('GamePlayers.CanceledAt')
+        .whereNot('GamePlayers.Status', 'CANCELED')
         .select(
             'GamePlayers.Id as playerId',
+            'GamePlayers.UserId',
             'Users.Username',
             'Users.badminton_level',
             'Users.verified_matches',
             'GamePlayers.FriendLevel',
             'GamePlayers.IsVirtual',
+            'GamePlayers.Status as enrollStatus',
             'GamePlayers.status',
             'GamePlayers.games_played',
-            'GamePlayers.check_in_at'
+            'GamePlayers.check_in_at',
+            'GamePlayers.paid_at'
         );
 
     const formattedPlayers = players.map(p => ({
         playerId: p.playerId,
         displayName: p.IsVirtual ? `${p.Username} +1` : p.Username,
         status: p.status,
+        enrollStatus: p.enrollStatus,
         level: p.IsVirtual ? ensureNumber(p.FriendLevel) : ensureNumber(p.badminton_level),
         games_played: p.games_played,
         verified_matches: p.verified_matches || 0,
-        check_in_at: p.check_in_at
+        check_in_at: p.check_in_at,
+        paid_at: p.paid_at || null,
+        isHost: !p.IsVirtual && p.UserId === hostId,
     }));
 
     const activeMatches = await knex('Matches').where({ game_id: gameId, match_status: 'active' }).select('*');

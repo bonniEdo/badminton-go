@@ -584,6 +584,27 @@ const getGameById = async (req, res) => {
     }
 };
 
+const markPaid = async (req, res) => {
+    const gameId = parseInt(req.params.id);
+    const userId = req.user?.id;
+    const { playerId } = req.body;
+
+    try {
+        const game = await knex("Games").where({ GameId: gameId, HostID: userId }).first();
+        if (!game) return res.status(403).json({ success: false, message: "僅主揪可操作" });
+
+        const player = await knex("GamePlayers").where({ Id: playerId, GameId: gameId }).first();
+        if (!player) return res.status(404).json({ success: false, message: "找不到該報名者" });
+
+        const newPaidAt = player.paid_at ? null : knex.fn.now();
+        await knex("GamePlayers").where({ Id: playerId }).update({ paid_at: newPaidAt });
+
+        res.json({ success: true, paid: !player.paid_at });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
 module.exports = {
     createGame,
     getGame,
@@ -594,5 +615,6 @@ module.exports = {
     cancelJoin,
     playerList,
     addFriend,
-    getGameById
+    getGameById,
+    markPaid
 };
