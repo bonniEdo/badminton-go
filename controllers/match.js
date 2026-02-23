@@ -45,18 +45,20 @@ const startMatch = async (req, res) => {
             await trx('Matches').insert({
                 game_id: gameId,
                 court_number: courtNumber,
-                player_a1: players.a1,
-                player_a2: players.a2,
-                player_b1: players.b1,
-                player_b2: players.b2,
+                player_a1: players.a1 || null,
+                player_a2: players.a2 || null,
+                player_b1: players.b1 || null,
+                player_b2: players.b2 || null,
                 match_status: 'active',
                 start_time: trx.fn.now()
             });
 
-            const gamePlayerTableIds = [players.a1, players.a2, players.b1, players.b2];
-            await trx('GamePlayers')
-                .whereIn('Id', gamePlayerTableIds)
-                .update({ status: 'playing' });
+            const gamePlayerTableIds = [players.a1, players.a2, players.b1, players.b2].filter(Boolean);
+            if (gamePlayerTableIds.length > 0) {
+                await trx('GamePlayers')
+                    .whereIn('Id', gamePlayerTableIds)
+                    .update({ status: 'playing' });
+            }
         });
 
         broadcastToGame(gameId);
@@ -123,28 +125,29 @@ const finishMatch = async (req, res) => {
         const match = await trx('Matches').where({ id: matchId }).first();
         if (!match) throw new Error("找不到比賽紀錄");
 
-        const playerIds = [match.player_a1, match.player_a2, match.player_b1, match.player_b2];
+        const playerIds = [match.player_a1, match.player_a2, match.player_b1, match.player_b2].filter(Boolean);
 
-        const playerDetails = await trx('GamePlayers')
-            .leftJoin('Users', 'GamePlayers.UserId', 'Users.Id')
-            .whereIn('GamePlayers.Id', playerIds)
-            .select(
-                'GamePlayers.Id',
-                'GamePlayers.UserId',
-                'GamePlayers.IsVirtual',
-                'GamePlayers.FriendLevel',
-                'Users.badminton_level',
-                'Users.verified_matches'
-            );
-
-        if (playerDetails.length !== 4) {
-            console.error(`Match ${matchId} 球員資料不齊全, 僅抓到 ${playerDetails.length} 筆`);
-        }
+        const playerDetails = playerIds.length > 0
+            ? await trx('GamePlayers')
+                .leftJoin('Users', 'GamePlayers.UserId', 'Users.Id')
+                .whereIn('GamePlayers.Id', playerIds)
+                .select(
+                    'GamePlayers.Id',
+                    'GamePlayers.UserId',
+                    'GamePlayers.IsVirtual',
+                    'GamePlayers.FriendLevel',
+                    'Users.badminton_level',
+                    'Users.verified_matches'
+                )
+            : [];
 
         const virtualCount = playerDetails.filter(p => !!p.IsVirtual).length;
+        const teamAIds = [match.player_a1, match.player_a2].filter(Boolean);
+        const teamBIds = [match.player_b1, match.player_b2].filter(Boolean);
+        const canGrade = teamAIds.length > 0 && teamBIds.length > 0 && playerDetails.length === playerIds.length;
         let isGraded = false;
 
-        if ((winner === 'A' || winner === 'B') && virtualCount < 2) {
+        if ((winner === 'A' || winner === 'B') && virtualCount < 2 && canGrade) {
             isGraded = true;
             const pMap = {};
             playerDetails.forEach(p => {
@@ -155,8 +158,8 @@ const finishMatch = async (req, res) => {
                 };
             });
 
-            const ratingA = (pMap[match.player_a1].level + pMap[match.player_a2].level) / 2;
-            const ratingB = (pMap[match.player_b1].level + pMap[match.player_b2].level) / 2;
+            const ratingA = teamAIds.reduce((sum, id) => sum + pMap[id].level, 0) / teamAIds.length;
+            const ratingB = teamBIds.reduce((sum, id) => sum + pMap[id].level, 0) / teamBIds.length;
 
             const K = 0.5;
             const DIVISOR = 5;
@@ -170,7 +173,7 @@ const finishMatch = async (req, res) => {
                 const p = pMap[pid];
                 if (p.isVirtual) continue;
 
-                const change = (pid === match.player_a1 || pid === match.player_a2) ? changeA : changeB;
+                const change = teamAIds.includes(pid) ? changeA : changeB;
                 const newLevel = Math.max(1.0, parseFloat((p.level + change).toFixed(2)));
 
                 await trx('Users').where({ Id: p.userId }).update({
@@ -186,10 +189,12 @@ const finishMatch = async (req, res) => {
             end_time: trx.fn.now()
         });
 
-        await trx('GamePlayers')
-            .whereIn('Id', playerIds)
-            .update({ status: 'idle', last_end_time: trx.fn.now() })
-            .increment('games_played', 1);
+        if (playerIds.length > 0) {
+            await trx('GamePlayers')
+                .whereIn('Id', playerIds)
+                .update({ status: 'idle', last_end_time: trx.fn.now() })
+                .increment('games_played', 1);
+        }
 
         broadcastToGame(match.game_id);
         res.json({
