@@ -22,7 +22,7 @@ app.use('/api/games', gameRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api/match', matchRoutes);
 app.get('/', (req, res) => {
-    res.send('🏸 羽球中毒勒戒所後端總部：運作中');
+    res.send('🏸 羽球勒戒所後端總部：運作中');
 });
 
 app.use((req, res, next) => {
@@ -37,7 +37,7 @@ async function startServer() {
         console.log('-------------db connected successfully-------------');
 
         app.listen(PORT, () => {
-            console.log(`🏸 羽球後端系統啟動中：http://localhost:${PORT}`);
+            console.log(`🏸 羽球勒戒所系統啟動中：http://localhost:${PORT}`);
         });
     } catch (err) {
         console.log('-------------db connection failed-------------', err);

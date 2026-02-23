@@ -70,7 +70,7 @@ const loginUser = async (req, res) => {
 
     res.json({
         success: true,
-        message: '登入成功',
+        message: '入所成功',
         token,
         user: {
             id: user.Id,
@@ -84,7 +84,7 @@ const loginUser = async (req, res) => {
 const logoutUser = async (req, res) => {
     res.status(200).json({
         success: true,
-        message: '已成功登出，勒戒所隨時歡迎您回來'
+        message: '已離所登記，勒戒所隨時歡迎您回來'
     });
 };
 
@@ -205,7 +205,7 @@ const liffLogin = async (req, res) => {
             }
         });
     } catch (error) {
-        res.status(401).json({ success: false, message: '身份驗證失敗' });
+        res.status(401).json({ success: false, message: '入所身份驗證失敗' });
     }
 };
 

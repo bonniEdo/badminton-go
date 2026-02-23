@@ -4,7 +4,7 @@ const errorHandler = (err, req, res, next) => {
     const statusCode = err.statusCode || 500;
     res.status(statusCode).json({
         status: 'error',
-        message: err.message || '伺服器內部錯誤',
+        message: err.message || '勒戒所系統內部異常',
         stack: process.env.NODE_ENV === 'dev' ? err.stack : {}
     });
 };

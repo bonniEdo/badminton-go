@@ -20,12 +20,12 @@ const checkin = async (req, res) => {
         });
 
     if (updatedCount === 0) {
-        return res.status(404).json({ success: false, message: '找不到報名資訊' });
+        return res.status(404).json({ success: false, message: '找不到掛號資訊' });
     }
 
     res.json({
         success: true,
-        message: '簽到成功，已為您及朋友簽下場蹤'
+        message: '報到成功，已為您及同伴簽下場蹤'
     });
 };
 
@@ -190,8 +190,8 @@ const finishMatch = async (req, res) => {
         res.json({
             success: true,
             message: isGraded
-                ? '戰報錄入成功，會員戰力與認證進度已更新'
-                : (virtualCount >= 2 ? '朋友人數過多 (>=2)，本局不計入診斷認證' : '對戰已結束 (未計分)')
+                ? '戰報錄入成功，病友戰力與認證進度已更新'
+                : (virtualCount >= 2 ? '同伴人數過多 (>=2)，本局不計入認證' : '對戰已結束 (未計分)')
         });
     });
 };

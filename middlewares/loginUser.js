@@ -8,7 +8,7 @@ const verifyToken = (req, res, next) => {
     const authHeader = req.headers['authorization'];
 
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        return res.status(401).json({ success: false, message: '未提供 Token 或格式錯誤，請先登入' });
+        return res.status(401).json({ success: false, message: '未提供 Token 或格式錯誤，請先入所' });
     }
 
     const token = authHeader.split(' ')[1];
