@@ -99,6 +99,12 @@ const getGame = async (req, res) => {
 
 
     const activeGames = await knex("Games")
+        .leftJoin({ gpSelf: "GamePlayers" }, function () {
+            this.on("gpSelf.GameId", "=", "Games.GameId")
+                .andOn("gpSelf.UserId", "=", "Games.HostID")
+                .andOn(knex.raw('"gpSelf"."IsVirtual" = false'))
+                .andOn(knex.raw('"gpSelf"."Status" != ?', ["CANCELED"]));
+        })
         .where({
             HostID: userId,
         })
@@ -114,6 +120,8 @@ const getGame = async (req, res) => {
             "Games.Notes",
             "Games.HostContact",
             "Games.CanceledAt",
+            knex.ref("gpSelf.status").as("status"),
+            knex.ref("gpSelf.check_in_at").as("check_in_at"),
             currentPlayersSubquery(),
             totalCountSubquery()
         )
