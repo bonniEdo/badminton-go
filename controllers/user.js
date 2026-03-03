@@ -208,6 +208,164 @@ const liffLogin = async (req, res) => {
         res.status(401).json({ success: false, message: '入所身份驗證失敗' });
     }
 };
+const getGoogleAuthUrl = (req, res) => {
+    const rootUrl = 'https://accounts.google.com/o/oauth2/v2/auth';
+    const options = {
+        redirect_uri: process.env.GOOGLE_CALLBACK_URL,
+        client_id: process.env.GOOGLE_CLIENT_ID,
+        access_type: 'offline',
+        response_type: 'code',
+        prompt: 'consent',
+        scope: [
+            'https://www.googleapis.com/auth/userinfo.profile',
+            'https://www.googleapis.com/auth/userinfo.email',
+        ].join(' '),
+        state: crypto.randomBytes(16).toString('hex'),
+    };
+
+    const url = `${rootUrl}?${new URLSearchParams(options).toString()}`;
+    res.json({ url });
+};
+
+const googleCallback = async (req, res) => {
+    const { code } = req.query;
+    if (!code) return res.redirect(`${process.env.FRONTEND_URL}/login?error=no_code`);
+
+    try {
+        const tokenResponse = await axios.post('https://oauth2.googleapis.com/token', {
+            code,
+            client_id: process.env.GOOGLE_CLIENT_ID,
+            client_secret: process.env.GOOGLE_CLIENT_SECRET,
+            redirect_uri: process.env.GOOGLE_CALLBACK_URL,
+            grant_type: 'authorization_code',
+        });
+
+        const { access_token } = tokenResponse.data;
+
+        const userResponse = await axios.get('https://www.googleapis.com/oauth2/v3/userinfo', {
+            headers: { Authorization: `Bearer ${access_token}` }
+        });
+
+        const { sub: googleId, name, picture, email } = userResponse.data;
+
+        let user = await knex('Users').where({ GoogleId: googleId }).first();
+
+        if (!user) {
+            const existingEmailUser = await knex('Users').where({ Email: email.toLowerCase() }).first();
+
+            if (existingEmailUser) {
+                await knex('Users').where({ Id: existingEmailUser.Id }).update({
+                    GoogleId: googleId,
+                    AvatarUrl: picture || existingEmailUser.AvatarUrl
+                });
+                user = { ...existingEmailUser, GoogleId: googleId };
+            } else {
+                // 完全新用戶，建立帳號
+                const [newUser] = await knex('Users')
+                    .insert({
+                        Username: name,
+                        Email: email.toLowerCase(),
+                        GoogleId: googleId,
+                        AvatarUrl: picture,
+                        badminton_level: 1.00,
+                        is_profile_completed: false
+                    })
+                    .returning('*');
+                user = newUser;
+            }
+        }
+
+        const token = jwt.sign(
+            { id: user.Id, email: user.Email, username: user.Username, avatarUrl: user.AvatarUrl },
+            JWT_SECRET,
+            { expiresIn: '30d' }
+        );
+
+        console.log("使用 Google 登入成功");
+
+        res.redirect(`${process.env.FRONTEND_URL}/login-success?token=${token}&is_profile_completed=${!!user.is_profile_completed}`);
+
+    } catch (error) {
+        console.error('Google Login Error:', error.response?.data || error.message);
+        res.redirect(`${process.env.FRONTEND_URL}/login?error=google_failed`);
+    }
+};
+const getFacebookAuthUrl = (req, res) => {
+    const rootUrl = 'https://www.facebook.com/v18.0/dialog/oauth';
+    const options = {
+        client_id: process.env.FACEBOOK_CLIENT_ID,
+        redirect_uri: process.env.FACEBOOK_CALLBACK_URL,
+        state: crypto.randomBytes(16).toString('hex'),
+        scope: ['email', 'public_profile'].join(','),
+        response_type: 'code',
+        auth_type: 'rerequest',
+    };
+
+    const url = `${rootUrl}?${new URLSearchParams(options).toString()}`;
+    res.json({ url });
+};
+
+const facebookCallback = async (req, res) => {
+    const { code } = req.query;
+    if (!code) return res.redirect(`${process.env.FRONTEND_URL}/login?error=no_code`);
+    const tokenResponse = await axios.get('https://graph.facebook.com/v18.0/oauth/access_token', {
+        params: {
+            client_id: process.env.FACEBOOK_CLIENT_ID,
+            client_secret: process.env.FACEBOOK_CLIENT_SECRET,
+            redirect_uri: process.env.FACEBOOK_CALLBACK_URL,
+            code,
+        }
+    });
+
+    const { access_token } = tokenResponse.data;
+    const userResponse = await axios.get('https://graph.facebook.com/me', {
+        params: {
+            fields: 'id,name,email,picture.type(large)',
+            access_token,
+        }
+    });
+
+    const { id: facebookId, name, email, picture } = userResponse.data;
+    const avatarUrl = picture?.data?.url;
+
+    let user = await knex('Users').where({ FacebookId: facebookId }).first();
+
+    if (!user) {
+        const normalizedEmail = email ? email.toLowerCase() : `${facebookId}@facebook.com`;
+        const existingEmailUser = await knex('Users').where({ Email: normalizedEmail }).first();
+
+        if (existingEmailUser) {
+            await knex('Users').where({ Id: existingEmailUser.Id }).update({
+                FacebookId: facebookId,
+                AvatarUrl: avatarUrl || existingEmailUser.AvatarUrl
+            });
+            user = { ...existingEmailUser, FacebookId: facebookId };
+        } else {
+            const [newUser] = await knex('Users')
+                .insert({
+                    Username: name,
+                    Email: normalizedEmail,
+                    FacebookId: facebookId,
+                    AvatarUrl: avatarUrl,
+                    badminton_level: 1.00,
+                    is_profile_completed: false
+                })
+                .returning('*');
+            user = newUser;
+        }
+    }
+
+    const token = jwt.sign(
+        { id: user.Id, email: user.Email, username: user.Username, avatarUrl: user.AvatarUrl },
+        JWT_SECRET,
+        { expiresIn: '30d' }
+    );
+
+    console.log("使用 Facebook 登入成功");
+
+    res.redirect(`${process.env.FRONTEND_URL}/login-success?token=${token}&is_profile_completed=${!!user.is_profile_completed}`);
+
+};
 
 const rating = async (req, res) => {
     const { years, level } = req.body;
@@ -269,4 +427,6 @@ const getMe = async (req, res) => {
     }
 };
 
-module.exports = { createUser, loginUser, logoutUser, getLineAuthUrl, lineCallback, liffLogin, rating, getMe };
+module.exports = {
+    createUser, loginUser, logoutUser, getLineAuthUrl, lineCallback, liffLogin, rating, getMe, googleCallback, getGoogleAuthUrl, facebookCallback, getFacebookAuthUrl
+};
