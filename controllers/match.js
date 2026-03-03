@@ -1,4 +1,5 @@
 const knex = require('../db');
+const { broadcastToGame } = require('../wsServer');
 
 const ensureNumber = (val) => {
     const num = parseFloat(val);
@@ -12,7 +13,8 @@ const checkin = async (req, res) => {
     const updatedCount = await knex('GamePlayers')
         .where({
             GameId: gameId,
-            UserId: userId
+            UserId: userId,
+            status: 'waiting_checkin'
         })
         .update({
             status: 'idle',
@@ -20,12 +22,13 @@ const checkin = async (req, res) => {
         });
 
     if (updatedCount === 0) {
-        return res.status(404).json({ success: false, message: '找不到報名資訊' });
+        return res.status(404).json({ success: false, message: '找不到掛號資訊' });
     }
 
+    broadcastToGame(gameId);
     res.json({
         success: true,
-        message: '簽到成功，已為您及朋友簽下場蹤'
+        message: '報到成功，已為您及同伴簽下場蹤'
     });
 };
 
@@ -42,20 +45,23 @@ const startMatch = async (req, res) => {
             await trx('Matches').insert({
                 game_id: gameId,
                 court_number: courtNumber,
-                player_a1: players.a1,
-                player_a2: players.a2,
-                player_b1: players.b1,
-                player_b2: players.b2,
+                player_a1: players.a1 || null,
+                player_a2: players.a2 || null,
+                player_b1: players.b1 || null,
+                player_b2: players.b2 || null,
                 match_status: 'active',
                 start_time: trx.fn.now()
             });
 
-            const gamePlayerTableIds = [players.a1, players.a2, players.b1, players.b2];
-            await trx('GamePlayers')
-                .whereIn('Id', gamePlayerTableIds)
-                .update({ status: 'playing' });
+            const gamePlayerTableIds = [players.a1, players.a2, players.b1, players.b2].filter(Boolean);
+            if (gamePlayerTableIds.length > 0) {
+                await trx('GamePlayers')
+                    .whereIn('Id', gamePlayerTableIds)
+                    .update({ status: 'playing' });
+            }
         });
 
+        broadcastToGame(gameId);
         res.json({ success: true, message: `場地 ${courtNumber} 已開打` });
     } catch (error) {
         res.status(400).json({ success: false, message: error.message });
@@ -66,35 +72,51 @@ const getLiveStatus = async (req, res) => {
     const { gameId } = req.params;
     if (!gameId || gameId === 'undefined') return res.status(400).json({ success: false, message: "GameId is required" });
 
+    const game = await knex('Games').where({ GameId: gameId }).select('HostID').first();
+    const hostId = game ? game.HostID : null;
+
     const players = await knex('GamePlayers')
         .leftJoin('Users', 'GamePlayers.UserId', 'Users.Id')
         .where('GamePlayers.GameId', gameId)
-        .whereIn('GamePlayers.Status', ['CONFIRMED', 'JOINED'])
+        .whereNull('GamePlayers.CanceledAt')
+        .whereNot('GamePlayers.Status', 'CANCELED')
         .select(
             'GamePlayers.Id as playerId',
+            'GamePlayers.UserId',
             'Users.Username',
             'Users.badminton_level',
             'Users.verified_matches',
             'GamePlayers.FriendLevel',
             'GamePlayers.IsVirtual',
+            'GamePlayers.Status as enrollStatus',
             'GamePlayers.status',
             'GamePlayers.games_played',
-            'GamePlayers.check_in_at'
+            'GamePlayers.check_in_at',
+            'GamePlayers.paid_at'
         );
 
     const formattedPlayers = players.map(p => ({
         playerId: p.playerId,
         displayName: p.IsVirtual ? `${p.Username} +1` : p.Username,
         status: p.status,
+        enrollStatus: p.enrollStatus,
         level: p.IsVirtual ? ensureNumber(p.FriendLevel) : ensureNumber(p.badminton_level),
         games_played: p.games_played,
         verified_matches: p.verified_matches || 0,
-        check_in_at: p.check_in_at
+        check_in_at: p.check_in_at,
+        paid_at: p.paid_at || null,
+        isHost: !p.IsVirtual && p.UserId === hostId,
     }));
 
     const activeMatches = await knex('Matches').where({ game_id: gameId, match_status: 'active' }).select('*');
 
-    res.json({ success: true, data: { players: formattedPlayers, matches: activeMatches } });
+    const userId = req.user?.id;
+    const myEntry = userId ? formattedPlayers.find(p => {
+        const raw = players.find(r => r.playerId === p.playerId);
+        return raw && !raw.IsVirtual && raw.UserId === userId;
+    }) : null;
+
+    res.json({ success: true, data: { players: formattedPlayers, matches: activeMatches, myPlayerId: myEntry?.playerId || null } });
 };
 
 const finishMatch = async (req, res) => {
@@ -103,28 +125,29 @@ const finishMatch = async (req, res) => {
         const match = await trx('Matches').where({ id: matchId }).first();
         if (!match) throw new Error("找不到比賽紀錄");
 
-        const playerIds = [match.player_a1, match.player_a2, match.player_b1, match.player_b2];
+        const playerIds = [match.player_a1, match.player_a2, match.player_b1, match.player_b2].filter(Boolean);
 
-        const playerDetails = await trx('GamePlayers')
-            .leftJoin('Users', 'GamePlayers.UserId', 'Users.Id')
-            .whereIn('GamePlayers.Id', playerIds)
-            .select(
-                'GamePlayers.Id',
-                'GamePlayers.UserId',
-                'GamePlayers.IsVirtual',
-                'GamePlayers.FriendLevel',
-                'Users.badminton_level',
-                'Users.verified_matches'
-            );
-
-        if (playerDetails.length !== 4) {
-            console.error(`Match ${matchId} 球員資料不齊全, 僅抓到 ${playerDetails.length} 筆`);
-        }
+        const playerDetails = playerIds.length > 0
+            ? await trx('GamePlayers')
+                .leftJoin('Users', 'GamePlayers.UserId', 'Users.Id')
+                .whereIn('GamePlayers.Id', playerIds)
+                .select(
+                    'GamePlayers.Id',
+                    'GamePlayers.UserId',
+                    'GamePlayers.IsVirtual',
+                    'GamePlayers.FriendLevel',
+                    'Users.badminton_level',
+                    'Users.verified_matches'
+                )
+            : [];
 
         const virtualCount = playerDetails.filter(p => !!p.IsVirtual).length;
+        const teamAIds = [match.player_a1, match.player_a2].filter(Boolean);
+        const teamBIds = [match.player_b1, match.player_b2].filter(Boolean);
+        const canGrade = teamAIds.length > 0 && teamBIds.length > 0 && playerDetails.length === playerIds.length;
         let isGraded = false;
 
-        if ((winner === 'A' || winner === 'B') && virtualCount < 2) {
+        if ((winner === 'A' || winner === 'B') && virtualCount < 2 && canGrade) {
             isGraded = true;
             const pMap = {};
             playerDetails.forEach(p => {
@@ -135,8 +158,8 @@ const finishMatch = async (req, res) => {
                 };
             });
 
-            const ratingA = (pMap[match.player_a1].level + pMap[match.player_a2].level) / 2;
-            const ratingB = (pMap[match.player_b1].level + pMap[match.player_b2].level) / 2;
+            const ratingA = teamAIds.reduce((sum, id) => sum + pMap[id].level, 0) / teamAIds.length;
+            const ratingB = teamBIds.reduce((sum, id) => sum + pMap[id].level, 0) / teamBIds.length;
 
             const K = 0.5;
             const DIVISOR = 5;
@@ -150,7 +173,7 @@ const finishMatch = async (req, res) => {
                 const p = pMap[pid];
                 if (p.isVirtual) continue;
 
-                const change = (pid === match.player_a1 || pid === match.player_a2) ? changeA : changeB;
+                const change = teamAIds.includes(pid) ? changeA : changeB;
                 const newLevel = Math.max(1.0, parseFloat((p.level + change).toFixed(2)));
 
                 await trx('Users').where({ Id: p.userId }).update({
@@ -166,16 +189,19 @@ const finishMatch = async (req, res) => {
             end_time: trx.fn.now()
         });
 
-        await trx('GamePlayers')
-            .whereIn('Id', playerIds)
-            .update({ status: 'idle', last_end_time: trx.fn.now() })
-            .increment('games_played', 1);
+        if (playerIds.length > 0) {
+            await trx('GamePlayers')
+                .whereIn('Id', playerIds)
+                .update({ status: 'idle', last_end_time: trx.fn.now() })
+                .increment('games_played', 1);
+        }
 
+        broadcastToGame(match.game_id);
         res.json({
             success: true,
             message: isGraded
-                ? '戰報錄入成功，會員戰力與認證進度已更新'
-                : (virtualCount >= 2 ? '朋友人數過多 (>=2)，本局不計入診斷認證' : '對戰已結束 (未計分)')
+                ? '戰報錄入成功，病友戰力與認證進度已更新'
+                : (virtualCount >= 2 ? '同伴人數過多 (>=2)，本局不計入認證' : '對戰已結束 (未計分)')
         });
     });
 };
@@ -227,4 +253,37 @@ const getMyHistory = async (req, res) => {
     res.json({ success: true, data: formattedHistory });
 };
 
-module.exports = { checkin, startMatch, getLiveStatus, finishMatch, getMyHistory };
+const hostCheckin = async (req, res) => {
+    const { gameId, playerId } = req.body;
+    const hostUserId = req.user?.id || req.user?.UserId;
+
+    try {
+        const game = await knex('Games').where({ GameId: gameId }).select('HostID').first();
+        if (!game || game.HostID !== hostUserId) {
+            return res.status(403).json({ success: false, message: '僅團主可執行此操作' });
+        }
+
+        const targetPlayer = await knex('GamePlayers')
+            .where({ Id: playerId, GameId: gameId })
+            .whereNot('Status', 'CANCELED')
+            .select('UserId')
+            .first();
+
+        if (!targetPlayer) {
+            return res.status(404).json({ success: false, message: '找不到該掛號資訊' });
+        }
+
+        const updatedCount = await knex('GamePlayers')
+            .where({ GameId: gameId, UserId: targetPlayer.UserId, status: 'waiting_checkin' })
+            .whereNot('Status', 'CANCELED')
+            .update({ status: 'idle', check_in_at: knex.fn.now() });
+
+        broadcastToGame(gameId);
+        res.json({ success: true, message: `已為該病友報到 (${updatedCount} 筆更新)` });
+    } catch (err) {
+        console.error('hostCheckin error:', err);
+        res.status(500).json({ success: false, message: '報到失敗' });
+    }
+};
+
+module.exports = { checkin, hostCheckin, startMatch, getLiveStatus, finishMatch, getMyHistory };

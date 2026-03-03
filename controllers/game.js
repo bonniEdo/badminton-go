@@ -2,6 +2,7 @@ const knex = require("../db");
 const validator = require("validator");
 const AppError = require("../utils/appError");
 const { GameStatus } = require('../utils/gameHelpers');
+const { broadcastToGame } = require('../wsServer');
 
 const locationSelect = knex.raw(`
     "Games"."Location" || 
@@ -41,7 +42,7 @@ const createGame = async (req, res) => {
 
     if (existingGame) {
         // 如果你希望更寬鬆，這裡可以移除這項檢查，或保留
-        throw new AppError("已有同時段同地點同場地的團囉！", 400);
+        throw new AppError("已有同時段同場所的療程囉！", 400);
     }
 
     const newGame = await knex.transaction(async (trx) => {
@@ -66,13 +67,14 @@ const createGame = async (req, res) => {
             GameId: insertedGame.GameId,
             UserId: userId,
             Status: "CONFIRMED",
+            IsVirtual: false,
             JoinedAt: knex.fn.now(),
         });
 
         return insertedGame;
     });
 
-    res.status(201).json({ success: true, message: "開團成功", game: newGame });
+    res.status(201).json({ success: true, message: "開診成功", game: newGame });
 };
 const currentPlayersSubquery = () => {
     return knex("GamePlayers")
@@ -97,6 +99,12 @@ const getGame = async (req, res) => {
 
 
     const activeGames = await knex("Games")
+        .leftJoin({ gpSelf: "GamePlayers" }, function () {
+            this.on("gpSelf.GameId", "=", "Games.GameId")
+                .andOn("gpSelf.UserId", "=", "Games.HostID")
+                .andOn(knex.raw('"gpSelf"."IsVirtual" = false'))
+                .andOn(knex.raw('"gpSelf"."Status" != ?', ["CANCELED"]));
+        })
         .where({
             HostID: userId,
         })
@@ -112,6 +120,8 @@ const getGame = async (req, res) => {
             "Games.Notes",
             "Games.HostContact",
             "Games.CanceledAt",
+            knex.ref("gpSelf.status").as("status"),
+            knex.ref("gpSelf.check_in_at").as("check_in_at"),
             currentPlayersSubquery(),
             totalCountSubquery()
         )
@@ -140,6 +150,7 @@ const getAllGames = async (req, res) => {
             "Games.Price",
             "Games.MaxPlayers",
             "Games.Notes",
+            "Games.HostID",
             "Games.HostContact",
             knex.raw(
                 `(SELECT "FriendCount" FROM "GamePlayers" 
@@ -168,18 +179,18 @@ const deleteGame = async (req, res) => {
     const userId = req.user.id;
 
     if (!gameId) {
-        return res.status(400).json({ success: false, message: "缺少球團名稱" });
+        return res.status(400).json({ success: false, message: "缺少療程名稱" });
     }
 
     const game = await knex("Games").where({ GameId: gameId }).first();
-    if (!game) throw new AppError("找不到此球團", 404);
+    if (!game) throw new AppError("找不到此療程", 404);
 
     if (String(game.HostID) !== String(userId)) {
-        return res.status(403).json({ success: false, message: "權限不足，只有團主可以取消此團" });
+        return res.status(403).json({ success: false, message: "權限不足，只有主治可以終止此療程" });
     }
 
     if (!game.IsActive || game.CanceledAt) {
-        throw new AppError("此團已經取消過了", 400);
+        throw new AppError("此療程已經終止過了", 400);
     }
 
     const [updatedGame] = await knex("Games")
@@ -206,8 +217,8 @@ const joinGame = async (req, res) => {
 
     const result = await knex.transaction(async (trx) => {
         const game = await trx("Games").where({ GameId: gameId }).forUpdate().first();
-        if (!game) throw new AppError("沒有此球團", 404);
-        if (!game.IsActive || game.CanceledAt) throw new AppError("此團已被取消", 400);
+        if (!game) throw new AppError("沒有此療程", 404);
+        if (!game.IsActive || game.CanceledAt) throw new AppError("此療程已被終止", 400);
         if (!phone) throw new AppError("缺少電話", 400);
 
         const existingRecord = await trx("GamePlayers")
@@ -215,7 +226,7 @@ const joinGame = async (req, res) => {
             .first();
 
         if (existingRecord && existingRecord.Status !== "CANCELED") {
-            throw new AppError("已經報名過囉", 400);
+            throw new AppError("已經掛號過囉", 400);
         }
 
         const resCount = await trx("GamePlayers")
@@ -301,7 +312,7 @@ const joinGame = async (req, res) => {
 
     res.status(201).json({
         success: true,
-        message: result.status === "CONFIRMED" ? "報名成功" : `候補第 ${result.waitlistOrder} 位`,
+        message: result.status === "CONFIRMED" ? "掛號成功" : `候補第 ${result.waitlistOrder} 位`,
         currentPlayers: result.finalTotal,
     });
 };
@@ -312,9 +323,12 @@ const getJoinedGames = async (req, res) => {
     const joinedGames = await knex("GamePlayers")
         .join("Games", "GamePlayers.GameId", "Games.GameId")
         .where("GamePlayers.UserId", userId)
-        .where("GamePlayers.IsVirtual", false)
+        .where(function () {
+            this.where("GamePlayers.IsVirtual", false).orWhereNull("GamePlayers.IsVirtual");
+        })
         .whereNot("GamePlayers.Status", "CANCELED")
         .whereIn("GamePlayers.Status", ["CONFIRMED", "WAITLIST"])
+        .whereNot("Games.HostID", userId)
         .select(
             "Games.GameId",
             "Games.Title",
@@ -356,9 +370,9 @@ const cancelJoin = async (req, res) => {
             .first();
         const game = await trx("Games").where({ GameId: gameId }).forUpdate().first();
 
-        if (!player || player.Status === "CANCELED") throw new Error("找不到報名紀錄");
+        if (!player || player.Status === "CANCELED") throw new Error("找不到掛號紀錄");
         if (player.status !== 'waiting_checkin') {
-            throw new AppError("您已簽到或在場上，無法自行取消。如需取消請聯繫主揪。", 400);
+            throw new AppError("您已報到或在場上，無法自行取消。如需取消請聯繫主治。", 400);
         }
 
         let message = "";
@@ -378,7 +392,7 @@ const cancelJoin = async (req, res) => {
                     check_in_at: null
                 });
 
-            message = "已取消朋友報名，保留本人名額";
+            message = "已取消同伴掛號，保留本人名額";
         } else {
             await trx("GamePlayers")
                 .where({ GameId: gameId, UserId: userId })
@@ -389,7 +403,7 @@ const cancelJoin = async (req, res) => {
                     status: "waiting_checkin",
                     check_in_at: null
                 });
-            message = "已成功取消報名";
+            message = "已成功取消掛號";
         }
 
         let promotedCount = 0;
@@ -476,7 +490,7 @@ const addFriend = async (req, res) => {
             .forUpdate()
             .first();
 
-        if (!player) throw new Error("找不到您的報名紀錄");
+        if (!player) throw new Error("找不到您的掛號紀錄");
 
         let initialStatus = "waiting_checkin";
         let initialCheckInAt = null;
@@ -540,7 +554,7 @@ const addFriend = async (req, res) => {
 
     res.status(200).json({
         success: true,
-        message: "已成功為朋友 +1 位，並宣告其程度",
+        message: "已成功為同伴辦理入所手續",
         currentPlayers: result.finalTotal
     });
 };
@@ -567,13 +581,46 @@ const getGameById = async (req, res) => {
             .first();
 
         if (!game) {
-            return res.status(404).json({ success: false, message: "找不到該球局" });
+            return res.status(404).json({ success: false, message: "找不到該療程" });
         }
 
         res.json({
             success: true,
             data: game
         });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+const markPaid = async (req, res) => {
+    const gameId = parseInt(req.params.id);
+    const userId = req.user?.id;
+    const { playerId } = req.body;
+
+    try {
+        const game = await knex("Games").where({ GameId: gameId, HostID: userId }).first();
+        if (!game) return res.status(403).json({ success: false, message: "僅主治可操作" });
+
+        const player = await knex("GamePlayers").where({ Id: playerId, GameId: gameId }).first();
+        if (!player) return res.status(404).json({ success: false, message: "找不到該掛號者" });
+
+        const newPaidAt = player.paid_at ? null : knex.fn.now();
+        const updateFields = { paid_at: newPaidAt };
+
+        let checkedIn = false;
+        if (!player.paid_at && player.status === 'waiting_checkin') {
+            await knex("GamePlayers")
+                .where({ GameId: gameId, UserId: player.UserId, status: 'waiting_checkin' })
+                .whereNot('Status', 'CANCELED')
+                .update({ status: 'idle', check_in_at: knex.fn.now() });
+            checkedIn = true;
+        }
+
+        await knex("GamePlayers").where({ Id: playerId }).update(updateFields);
+
+        broadcastToGame(gameId);
+        res.json({ success: true, paid: !player.paid_at, checkedIn });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }
@@ -589,5 +636,6 @@ module.exports = {
     cancelJoin,
     playerList,
     addFriend,
-    getGameById
+    getGameById,
+    markPaid
 };

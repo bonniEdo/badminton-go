@@ -1,7 +1,9 @@
 require('dotenv').config();
+const http = require('http');
 const express = require('express');
 const knex = require('./db');
 const app = express();
+const server = http.createServer(app);
 const PORT = process.env.PORT || 3000;
 const { version } = require('./package.json');
 const gameRoutes = require('./routes/gameRoutes');
@@ -10,6 +12,7 @@ const matchRoutes = require('./routes/matchRoutes');
 const errorHandler = require('./middlewares/error');
 const AppError = require('./utils/appError');
 const cors = require('cors');
+const { initWebSocket } = require('./wsServer');
 
 
 app.use(cors({
@@ -23,7 +26,7 @@ app.use('/api/games', gameRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api/match', matchRoutes);
 app.get('/', (req, res) => {
-    res.send('🏸 羽球中毒勒戒所後端總部：運作中');
+    res.send('🏸 羽球勒戒所後端總部：運作中');
 });
 
 app.get('/version', (req, res) => {
@@ -45,8 +48,9 @@ async function startServer() {
         await knex.raw('SELECT 1');
         console.log('-------------db connected successfully-------------');
 
-        app.listen(PORT, () => {
-            console.log(`🏸 羽球後端系統啟動中：http://localhost:${PORT}`);
+        initWebSocket(server);
+        server.listen(PORT, () => {
+            console.log(`🏸 羽球勒戒所系統啟動中：http://localhost:${PORT}`);
         });
     } catch (err) {
         console.log('-------------db connection failed-------------', err);
