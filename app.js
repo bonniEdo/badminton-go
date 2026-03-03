@@ -5,6 +5,7 @@ const knex = require('./db');
 const app = express();
 const server = http.createServer(app);
 const PORT = process.env.PORT || 3000;
+const { version } = require('./package.json');
 const gameRoutes = require('./routes/gameRoutes');
 const userRoutes = require('./routes/userRoutes');
 const matchRoutes = require('./routes/matchRoutes');
@@ -26,6 +27,14 @@ app.use('/api/user', userRoutes);
 app.use('/api/match', matchRoutes);
 app.get('/', (req, res) => {
     res.send('🏸 羽球勒戒所後端總部：運作中');
+});
+
+app.get('/version', (req, res) => {
+    res.json({
+        success: true,
+        service: 'badminton-go',
+        version
+    });
 });
 
 app.use((req, res, next) => {
