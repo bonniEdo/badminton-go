@@ -140,6 +140,7 @@ const getAllGames = async (req, res) => {
     const userId = req.user?.id || null;
     const activeGames = await knex("Games")
         .join("Users", "Games.HostID", "Users.Id")
+        .where("IsActive", true)
         .whereNull("Games.CanceledAt")
         .select(
             "Games.GameId",
@@ -323,6 +324,8 @@ const getJoinedGames = async (req, res) => {
     const joinedGames = await knex("GamePlayers")
         .join("Games", "GamePlayers.GameId", "Games.GameId")
         .where("GamePlayers.UserId", userId)
+        .where("Games.IsActive", true)
+        .whereNull("Games.CanceledAt")
         .where(function () {
             this.where("GamePlayers.IsVirtual", false).orWhereNull("GamePlayers.IsVirtual");
         })
