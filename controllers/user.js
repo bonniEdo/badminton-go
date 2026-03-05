@@ -474,6 +474,98 @@ const getMe = async (req, res) => {
     }
 };
 
+const getPublicProfile = async (req, res) => {
+    try {
+        const userId = Number(req.params.id);
+        if (!Number.isInteger(userId) || userId <= 0) {
+            return res.status(400).json({ success: false, message: 'Invalid user id' });
+        }
+
+        const user = await knex('Users')
+            .where({ Id: userId })
+            .select('Id', 'Username', 'AvatarUrl', 'badminton_level', 'verified_matches')
+            .first();
+
+        if (!user) {
+            return res.status(404).json({ success: false, message: 'User not found' });
+        }
+
+        const entries = await knex('GamePlayers')
+            .where({ UserId: userId, IsVirtual: false })
+            .whereNot('Status', 'CANCELED')
+            .select('Id');
+
+        const playerEntryIds = entries.map((entry) => entry.Id);
+        if (playerEntryIds.length === 0) {
+            return res.json({
+                success: true,
+                data: {
+                    id: user.Id,
+                    username: user.Username,
+                    avatarUrl: user.AvatarUrl || null,
+                    level: Number(user.badminton_level || 1),
+                    verified_matches: Number(user.verified_matches || 0),
+                    matches: 0,
+                    wins: 0,
+                    losses: 0,
+                    winRate: 0
+                }
+            });
+        }
+
+        const finishedMatches = await knex('Matches')
+            .where('match_status', 'finished')
+            .whereIn('winner', ['A', 'B'])
+            .where(function () {
+                this.whereIn('player_a1', playerEntryIds)
+                    .orWhereIn('player_a2', playerEntryIds)
+                    .orWhereIn('player_b1', playerEntryIds)
+                    .orWhereIn('player_b2', playerEntryIds);
+            })
+            .select('winner', 'player_a1', 'player_a2', 'player_b1', 'player_b2');
+
+        const playerEntrySet = new Set(playerEntryIds.map((id) => Number(id)));
+        let wins = 0;
+        let losses = 0;
+
+        for (const match of finishedMatches) {
+            const inTeamA =
+                playerEntrySet.has(Number(match.player_a1)) ||
+                playerEntrySet.has(Number(match.player_a2));
+            const inTeamB =
+                playerEntrySet.has(Number(match.player_b1)) ||
+                playerEntrySet.has(Number(match.player_b2));
+            if (!inTeamA && !inTeamB) continue;
+
+            if ((inTeamA && match.winner === 'A') || (inTeamB && match.winner === 'B')) {
+                wins += 1;
+            } else {
+                losses += 1;
+            }
+        }
+
+        const matches = wins + losses;
+        const winRate = matches > 0 ? Number(((wins / matches) * 100).toFixed(1)) : 0;
+
+        return res.json({
+            success: true,
+            data: {
+                id: user.Id,
+                username: user.Username,
+                avatarUrl: user.AvatarUrl || null,
+                level: Number(user.badminton_level || 1),
+                verified_matches: Number(user.verified_matches || 0),
+                matches,
+                wins,
+                losses,
+                winRate
+            }
+        });
+    } catch (error) {
+        return res.status(500).json({ success: false, message: 'Failed to get public profile' });
+    }
+};
+
 const updateAvatar = async (req, res) => {
     try {
         const userId = req.user.id;
@@ -517,7 +609,21 @@ const updateAvatar = async (req, res) => {
 };
 
 module.exports = {
-    createUser, loginUser, logoutUser, getLineAuthUrl, lineCallback, liffLogin, rating, getMe, updateAvatar, googleCallback, getGoogleAuthUrl, facebookCallback, getFacebookAuthUrl, exchangeLoginCode
+    createUser,
+    loginUser,
+    logoutUser,
+    getLineAuthUrl,
+    lineCallback,
+    liffLogin,
+    rating,
+    getMe,
+    getPublicProfile,
+    updateAvatar,
+    googleCallback,
+    getGoogleAuthUrl,
+    facebookCallback,
+    getFacebookAuthUrl,
+    exchangeLoginCode
 };
 
 

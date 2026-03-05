@@ -55,6 +55,7 @@ const getNextGroupData = async (gameId, formattedPlayers) => {
             return {
                 slot: item.slot,
                 playerId: player.playerId,
+                userId: player.userId || null,
                 displayName: player.displayName,
                 avatarUrl: player.avatarUrl || null,
                 level: player.level,
@@ -242,6 +243,7 @@ const getLiveStatus = async (req, res) => {
 
     const formattedPlayers = players.map(p => ({
         playerId: p.playerId,
+        userId: p.IsVirtual ? null : p.UserId,
         displayName: p.IsVirtual ? `${p.Username} +1` : p.Username,
         avatarUrl: p.AvatarUrl || null,
         status: p.status,

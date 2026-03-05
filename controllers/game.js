@@ -94,6 +94,12 @@ const totalCountSubquery = () => {
         .as("TotalCount");
 };
 
+const normalizeListAvatarUrl = (avatarUrl) => {
+    if (!avatarUrl || typeof avatarUrl !== "string") return null;
+    if (avatarUrl.startsWith("data:image/")) return null;
+    return avatarUrl;
+};
+
 const getGame = async (req, res) => {
     const userId = req.user.id;
 
@@ -128,7 +134,12 @@ const getGame = async (req, res) => {
         .orderBy("Games.GameDateTime", "desc");
 
     const processedGames = GameStatus(activeGames);
-    const sortedGames = processedGames.sort((a, b) => a.isExpired - b.isExpired);
+    const sortedGames = processedGames
+        .sort((a, b) => a.isExpired - b.isExpired)
+        .map((g) => ({
+            ...g,
+            hostAvatarUrl: normalizeListAvatarUrl(g.hostAvatarUrl)
+        }));
 
     res.status(200).json({
         success: true,
@@ -462,6 +473,7 @@ const playerList = async (req, res) => {
     const players = await knex("GamePlayers")
         .join("Users", "GamePlayers.UserId", "Users.Id")
         .select(
+            "GamePlayers.UserId",
             "Users.Username",
             "Users.AvatarUrl",
             "GamePlayers.Status",
@@ -476,6 +488,8 @@ const playerList = async (req, res) => {
     const formattedData = players.map(p => ({
         Username: p.IsVirtual ? `${p.Username} +1` : p.Username,
         Status: p.Status,
+        UserId: p.IsVirtual ? null : p.UserId,
+        IsVirtual: !!p.IsVirtual,
         AvatarUrl: p.AvatarUrl || null
     }));
 

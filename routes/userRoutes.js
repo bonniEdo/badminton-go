@@ -1,6 +1,21 @@
 const express = require('express');
 const router = express.Router();
-const { createUser, loginUser, getLineAuthUrl, lineCallback, liffLogin, rating, getMe, updateAvatar, googleCallback, getGoogleAuthUrl, facebookCallback, getFacebookAuthUrl, exchangeLoginCode } = require('../controllers/user')
+const {
+  createUser,
+  loginUser,
+  getLineAuthUrl,
+  lineCallback,
+  liffLogin,
+  rating,
+  getMe,
+  getPublicProfile,
+  updateAvatar,
+  googleCallback,
+  getGoogleAuthUrl,
+  facebookCallback,
+  getFacebookAuthUrl,
+  exchangeLoginCode
+} = require('../controllers/user')
 const verifyToken = require('../middlewares/auth');
 
 
@@ -17,6 +32,7 @@ router.get('/facebook/callback', facebookCallback);
 router.post('/liff-login', liffLogin);
 router.post('/complete-rating', verifyToken, rating);
 router.get('/me', verifyToken, getMe);
+router.get('/public/:id', getPublicProfile);
 router.post('/avatar', verifyToken, updateAvatar);
 
 
