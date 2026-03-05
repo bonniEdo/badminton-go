@@ -213,6 +213,14 @@ const startMatch = async (req, res) => {
     }
 };
 
+const buildAvatarListUrl = (req, userId, avatarUrl) => {
+    if (!avatarUrl || typeof avatarUrl !== 'string') return null;
+    if (!avatarUrl.startsWith('data:image/')) return avatarUrl;
+    if (!userId) return null;
+    const origin = `${req.protocol}://${req.get('host')}`;
+    return `${origin}/api/user/avatar/${userId}`;
+};
+
 const getLiveStatus = async (req, res) => {
     const { gameId } = req.params;
     if (!gameId || gameId === 'undefined') return res.status(400).json({ success: false, message: "GameId is required" });
@@ -245,7 +253,7 @@ const getLiveStatus = async (req, res) => {
         playerId: p.playerId,
         userId: p.IsVirtual ? null : p.UserId,
         displayName: p.IsVirtual ? `${p.Username} +1` : p.Username,
-        avatarUrl: p.AvatarUrl || null,
+        avatarUrl: buildAvatarListUrl(req, p.UserId, p.AvatarUrl),
         status: p.status,
         enrollStatus: p.enrollStatus,
         level: p.IsVirtual ? ensureNumber(p.FriendLevel) : ensureNumber(p.badminton_level),

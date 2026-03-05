@@ -94,10 +94,12 @@ const totalCountSubquery = () => {
         .as("TotalCount");
 };
 
-const normalizeListAvatarUrl = (avatarUrl) => {
+const buildAvatarListUrl = (req, userId, avatarUrl) => {
     if (!avatarUrl || typeof avatarUrl !== "string") return null;
-    if (avatarUrl.startsWith("data:image/")) return null;
-    return avatarUrl;
+    if (!avatarUrl.startsWith("data:image/")) return avatarUrl;
+    if (!userId) return null;
+    const origin = `${req.protocol}://${req.get('host')}`;
+    return `${origin}/api/user/avatar/${userId}`;
 };
 
 const getGame = async (req, res) => {
@@ -138,7 +140,7 @@ const getGame = async (req, res) => {
         .sort((a, b) => a.isExpired - b.isExpired)
         .map((g) => ({
             ...g,
-            hostAvatarUrl: normalizeListAvatarUrl(g.hostAvatarUrl)
+            hostAvatarUrl: buildAvatarListUrl(req, g.HostID, g.hostAvatarUrl)
         }));
 
     res.status(200).json({
@@ -490,7 +492,7 @@ const playerList = async (req, res) => {
         Status: p.Status,
         UserId: p.IsVirtual ? null : p.UserId,
         IsVirtual: !!p.IsVirtual,
-        AvatarUrl: p.AvatarUrl || null
+        AvatarUrl: buildAvatarListUrl(req, p.UserId, p.AvatarUrl)
     }));
 
     res.json({

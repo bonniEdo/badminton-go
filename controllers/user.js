@@ -26,6 +26,14 @@ const formatUserResponse = (user) => ({
     badminton_level: user.badminton_level,
 });
 
+const buildAvatarAssetUrl = (req, userId, avatarUrl) => {
+    if (!avatarUrl || typeof avatarUrl !== 'string') return null;
+    if (!avatarUrl.startsWith('data:image/')) return avatarUrl;
+    if (!userId) return null;
+    const origin = `${req.protocol}://${req.get('host')}`;
+    return `${origin}/api/user/avatar/${userId}`;
+};
+
 const createUser = async (req, res) => {
     const { username, email, password } = req.body;
     if (!username) throw new AppError('Username is required', 400);
@@ -497,15 +505,15 @@ const getPublicProfile = async (req, res) => {
 
         const playerEntryIds = entries.map((entry) => entry.Id);
         if (playerEntryIds.length === 0) {
-            return res.json({
-                success: true,
-                data: {
-                    id: user.Id,
-                    username: user.Username,
-                    avatarUrl: user.AvatarUrl || null,
-                    level: Number(user.badminton_level || 1),
-                    verified_matches: Number(user.verified_matches || 0),
-                    matches: 0,
+        return res.json({
+            success: true,
+            data: {
+                id: user.Id,
+                username: user.Username,
+                avatarUrl: buildAvatarAssetUrl(req, user.Id, user.AvatarUrl),
+                level: Number(user.badminton_level || 1),
+                verified_matches: Number(user.verified_matches || 0),
+                matches: 0,
                     wins: 0,
                     losses: 0,
                     winRate: 0
@@ -552,7 +560,7 @@ const getPublicProfile = async (req, res) => {
             data: {
                 id: user.Id,
                 username: user.Username,
-                avatarUrl: user.AvatarUrl || null,
+                avatarUrl: buildAvatarAssetUrl(req, user.Id, user.AvatarUrl),
                 level: Number(user.badminton_level || 1),
                 verified_matches: Number(user.verified_matches || 0),
                 matches,
@@ -563,6 +571,44 @@ const getPublicProfile = async (req, res) => {
         });
     } catch (error) {
         return res.status(500).json({ success: false, message: 'Failed to get public profile' });
+    }
+};
+
+const getAvatarById = async (req, res) => {
+    try {
+        const userId = Number(req.params.id);
+        if (!Number.isInteger(userId) || userId <= 0) {
+            return res.status(400).json({ success: false, message: 'Invalid user id' });
+        }
+
+        const user = await knex('Users')
+            .where({ Id: userId })
+            .select('AvatarUrl')
+            .first();
+
+        if (!user || !user.AvatarUrl) {
+            return res.status(404).json({ success: false, message: 'Avatar not found' });
+        }
+
+        const avatar = user.AvatarUrl;
+        if (!avatar.startsWith('data:image/')) {
+            return res.redirect(302, avatar);
+        }
+
+        const matched = avatar.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+        if (!matched) {
+            return res.status(400).json({ success: false, message: 'Invalid avatar format' });
+        }
+
+        const mimeType = matched[1];
+        const base64Data = matched[2];
+        const buffer = Buffer.from(base64Data, 'base64');
+
+        res.setHeader('Content-Type', mimeType);
+        res.setHeader('Cache-Control', 'public, max-age=300');
+        return res.send(buffer);
+    } catch (_) {
+        return res.status(500).json({ success: false, message: 'Failed to get avatar' });
     }
 };
 
@@ -618,6 +664,7 @@ module.exports = {
     rating,
     getMe,
     getPublicProfile,
+    getAvatarById,
     updateAvatar,
     googleCallback,
     getGoogleAuthUrl,
