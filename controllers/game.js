@@ -163,6 +163,7 @@ const getAllGames = async (req, res) => {
             ),
 
             knex.ref("Users.Username").as("hostName"), // ✅ 這裡改 Username（大寫U）
+            knex.ref("Users.AvatarUrl").as("hostAvatarUrl"),
             currentPlayersSubquery(),
             totalCountSubquery()
         )
@@ -462,6 +463,7 @@ const playerList = async (req, res) => {
         .join("Users", "GamePlayers.UserId", "Users.Id")
         .select(
             "Users.Username",
+            "Users.AvatarUrl",
             "GamePlayers.Status",
             "GamePlayers.IsVirtual",
             "GamePlayers.FriendCount"
@@ -473,7 +475,8 @@ const playerList = async (req, res) => {
 
     const formattedData = players.map(p => ({
         Username: p.IsVirtual ? `${p.Username} +1` : p.Username,
-        Status: p.Status
+        Status: p.Status,
+        AvatarUrl: p.AvatarUrl || null
     }));
 
     res.json({

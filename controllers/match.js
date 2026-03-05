@@ -26,6 +26,7 @@ const getNextGroupData = async (gameId, formattedPlayers) => {
                 slot: item.slot,
                 playerId: player.playerId,
                 displayName: player.displayName,
+                avatarUrl: player.avatarUrl || null,
                 level: player.level,
                 isHost: player.isHost
             };
@@ -191,6 +192,7 @@ const getLiveStatus = async (req, res) => {
             'GamePlayers.Id as playerId',
             'GamePlayers.UserId',
             'Users.Username',
+            'Users.AvatarUrl',
             'Users.badminton_level',
             'Users.verified_matches',
             'GamePlayers.FriendLevel',
@@ -205,6 +207,7 @@ const getLiveStatus = async (req, res) => {
     const formattedPlayers = players.map(p => ({
         playerId: p.playerId,
         displayName: p.IsVirtual ? `${p.Username} +1` : p.Username,
+        avatarUrl: p.AvatarUrl || null,
         status: p.status,
         enrollStatus: p.enrollStatus,
         level: p.IsVirtual ? ensureNumber(p.FriendLevel) : ensureNumber(p.badminton_level),
