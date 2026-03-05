@@ -427,6 +427,48 @@ const getMe = async (req, res) => {
     }
 };
 
+const updateAvatar = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { avatarDataUrl } = req.body;
+
+        if (!avatarDataUrl || typeof avatarDataUrl !== 'string') {
+            return res.status(400).json({ success: false, message: '缺少頭貼資料' });
+        }
+
+        const isDataImage = /^data:image\/(png|jpeg|jpg|webp);base64,/.test(avatarDataUrl);
+        if (!isDataImage) {
+            return res.status(400).json({ success: false, message: '僅支援 PNG/JPG/WEBP 圖片格式' });
+        }
+
+        if (avatarDataUrl.length > 800000) {
+            return res.status(400).json({ success: false, message: '圖片過大，請縮小後再上傳' });
+        }
+
+        await knex('Users')
+            .where({ Id: userId })
+            .update({ AvatarUrl: avatarDataUrl });
+
+        const user = await knex('Users').where({ Id: userId }).first();
+        if (!user) return res.status(404).json({ success: false, message: '找不到使用者' });
+
+        return res.json({
+            success: true,
+            message: '頭貼更新成功',
+            user: {
+                id: user.Id,
+                username: user.Username,
+                avatarUrl: user.AvatarUrl,
+                is_profile_completed: !!user.is_profile_completed,
+                badminton_level: user.badminton_level,
+                verified_matches: user.verified_matches,
+            }
+        });
+    } catch (error) {
+        return res.status(500).json({ success: false, message: '頭貼更新失敗' });
+    }
+};
+
 module.exports = {
-    createUser, loginUser, logoutUser, getLineAuthUrl, lineCallback, liffLogin, rating, getMe, googleCallback, getGoogleAuthUrl, facebookCallback, getFacebookAuthUrl
+    createUser, loginUser, logoutUser, getLineAuthUrl, lineCallback, liffLogin, rating, getMe, updateAvatar, googleCallback, getGoogleAuthUrl, facebookCallback, getFacebookAuthUrl
 };
