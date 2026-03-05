@@ -6,6 +6,103 @@ const ensureNumber = (val) => {
     return isNaN(num) ? 1.0 : num;
 };
 
+const getNextGroupData = async (gameId, formattedPlayers) => {
+    const row = await knex('GameNextGroups')
+        .where({ game_id: gameId })
+        .first();
+
+    const slotPlayerIds = row
+        ? [row.slot1_player_id, row.slot2_player_id, row.slot3_player_id, row.slot4_player_id]
+        : [null, null, null, null];
+
+    const players = slotPlayerIds
+        .map((playerId, idx) => ({ playerId, slot: idx + 1 }))
+        .filter(item => !!item.playerId)
+        .map((item) => {
+            const player = formattedPlayers.find(p => p.playerId === item.playerId);
+            if (!player) return null;
+
+            return {
+                slot: item.slot,
+                playerId: player.playerId,
+                displayName: player.displayName,
+                level: player.level,
+                isHost: player.isHost
+            };
+        })
+        .filter(Boolean);
+
+    return { slotPlayerIds, players };
+};
+
+const setNextGroup = async (req, res) => {
+    const { gameId, slots } = req.body;
+    const hostUserId = req.user?.id || req.user?.UserId;
+
+    if (!gameId) {
+        return res.status(400).json({ success: false, message: '缺少 gameId' });
+    }
+
+    if (!Array.isArray(slots) || slots.length !== 4) {
+        return res.status(400).json({ success: false, message: 'slots 格式錯誤，必須是 4 格陣列' });
+    }
+
+    const normalizedSlots = slots.map((val) => {
+        if (val === null || val === undefined || val === '') return null;
+        const num = Number(val);
+        return Number.isInteger(num) ? num : NaN;
+    });
+
+    if (normalizedSlots.some(val => Number.isNaN(val))) {
+        return res.status(400).json({ success: false, message: 'slots 內容錯誤，必須是 playerId 或 null' });
+    }
+
+    const nonNullSlots = normalizedSlots.filter(val => val !== null);
+    const uniqueIds = [...new Set(nonNullSlots)];
+    if (uniqueIds.length !== nonNullSlots.length) {
+        return res.status(400).json({ success: false, message: '預備組不可有重複球員' });
+    }
+
+    try {
+        const game = await knex('Games').where({ GameId: gameId }).select('HostID').first();
+        if (!game || String(game.HostID) !== String(hostUserId)) {
+            return res.status(403).json({ success: false, message: '僅團主可設定預備組' });
+        }
+
+        if (uniqueIds.length > 0) {
+            const validRows = await knex('GamePlayers')
+                .where({ GameId: gameId, status: 'idle' })
+                .whereNull('CanceledAt')
+                .whereNot('Status', 'CANCELED')
+                .whereIn('Id', uniqueIds)
+                .select('Id');
+
+            if (validRows.length !== uniqueIds.length) {
+                return res.status(400).json({ success: false, message: '預備組包含不可用球員（非待命、已取消或不屬於本場）' });
+            }
+        }
+
+        const payload = {
+            game_id: gameId,
+            slot1_player_id: normalizedSlots[0],
+            slot2_player_id: normalizedSlots[1],
+            slot3_player_id: normalizedSlots[2],
+            slot4_player_id: normalizedSlots[3],
+            updated_at: knex.fn.now()
+        };
+
+        await knex('GameNextGroups')
+            .insert(payload)
+            .onConflict('game_id')
+            .merge(payload);
+
+        broadcastToGame(gameId);
+        return res.json({ success: true, data: { slotPlayerIds: normalizedSlots } });
+    } catch (error) {
+        return res.status(500).json({ success: false, message: '設定預備組失敗' });
+    }
+};
+
 const checkin = async (req, res) => {
     const { gameId } = req.body;
     const userId = req.user?.id || req.user?.UserId;
@@ -59,6 +156,16 @@ const startMatch = async (req, res) => {
                     .whereIn('Id', gamePlayerTableIds)
                     .update({ status: 'playing' });
             }
+
+            await trx('GameNextGroups')
+                .where({ game_id: gameId })
+                .update({
+                    slot1_player_id: null,
+                    slot2_player_id: null,
+                    slot3_player_id: null,
+                    slot4_player_id: null,
+                    updated_at: trx.fn.now()
+                });
         });
 
         broadcastToGame(gameId);
@@ -116,7 +223,17 @@ const getLiveStatus = async (req, res) => {
         return raw && !raw.IsVirtual && raw.UserId === userId;
     }) : null;
 
-    res.json({ success: true, data: { players: formattedPlayers, matches: activeMatches, myPlayerId: myEntry?.playerId || null } });
+    const nextGroup = await getNextGroupData(gameId, formattedPlayers);
+
+    res.json({
+        success: true,
+        data: {
+            players: formattedPlayers,
+            matches: activeMatches,
+            myPlayerId: myEntry?.playerId || null,
+            nextGroup
+        }
+    });
 };
 
 const finishMatch = async (req, res) => {
@@ -286,4 +403,4 @@ const hostCheckin = async (req, res) => {
     }
 };
 
-module.exports = { checkin, hostCheckin, startMatch, getLiveStatus, finishMatch, getMyHistory };
+module.exports = { checkin, hostCheckin, setNextGroup, startMatch, getLiveStatus, finishMatch, getMyHistory };
