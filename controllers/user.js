@@ -1,4 +1,4 @@
-require('dotenv').config();
+﻿require('dotenv').config();
 
 const knex = require('../db');
 const bcrypt = require('bcryptjs');
@@ -7,7 +7,15 @@ const JWT_SECRET = process.env.JWT_SECRET;
 const AppError = require('../utils/appError');
 const validator = require('validator');
 const axios = require('axios');
-const crypto = require('crypto');
+const { createLoginCode, consumeLoginCode } = require('../utils/loginCodeStore');
+const { createOAuthState, consumeOAuthState } = require('../utils/oauthStateStore');
+
+const validateOAuthState = (req, provider) => {
+    const incomingState = req.query?.state;
+    if (!consumeOAuthState(provider, incomingState)) {
+        throw new AppError('OAuth state validation failed', 401);
+    }
+};
 
 const formatUserResponse = (user) => ({
     id: user.Id,
@@ -20,17 +28,17 @@ const formatUserResponse = (user) => ({
 
 const createUser = async (req, res) => {
     const { username, email, password } = req.body;
-    if (!username) throw new AppError('缺少名字', 400);
+    if (!username) throw new AppError('Username is required', 400);
 
     const normalizedEmail = email.toLowerCase().trim();
     if (!normalizedEmail || !validator.isEmail(normalizedEmail)) {
-        throw new AppError('請輸入正確的信箱格式', 400);
+        throw new AppError('Invalid email format', 400);
     }
 
     const existingUser = await knex('Users').where({ Email: normalizedEmail }).first();
-    if (existingUser) throw new AppError('此信箱已被註冊', 400);
+    if (existingUser) throw new AppError('Email already exists', 400);
 
-    if (!password) throw new AppError('缺少密碼', 400);
+    if (!password) throw new AppError('Password is required', 400);
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
@@ -45,7 +53,7 @@ const createUser = async (req, res) => {
 
     res.status(201).json({
         success: true,
-        message: '註冊成功',
+        message: 'User created successfully',
         user: formatUserResponse(newUser)
     });
 };
@@ -55,22 +63,22 @@ const loginUser = async (req, res) => {
     const user = await knex('Users').where({ Email: email.toLowerCase().trim() }).first();
 
     if (!user || !user.Password) {
-        throw new AppError('帳號不存在或請使用 LINE 登入', 401);
+        throw new AppError('Invalid credentials or social-login account', 401);
     }
 
     const isMatch = await bcrypt.compare(password, user.Password);
-    if (!isMatch) throw new AppError('密碼錯誤', 401);
+    if (!isMatch) throw new AppError('Incorrect password', 401);
 
     const token = jwt.sign(
         { id: user.Id, email: user.Email, username: user.Username },
         JWT_SECRET,
         { expiresIn: '30min' }
     );
-    console.log("使用帳密登入成功")
+    console.log("User login success")
 
     res.json({
         success: true,
-        message: '入所成功',
+        message: 'Login success',
         token,
         user: {
             id: user.Id,
@@ -84,18 +92,17 @@ const loginUser = async (req, res) => {
 const logoutUser = async (req, res) => {
     res.status(200).json({
         success: true,
-        message: '已離所登記，勒戒所隨時歡迎您回來'
+        message: 'Logout success'
     });
 };
 
 const getLineAuthUrl = (req, res) => {
-    const state = crypto.randomBytes(16).toString('hex');
+    const state = createOAuthState('line');
     const client_id = process.env.LINE_CHANNEL_ID;
     const redirect_uri = encodeURIComponent(process.env.LINE_CALLBACK_URL);
     const scope = 'profile openid email';
 
     const url = `https://access.line.me/oauth2/v2.1/authorize?response_type=code&client_id=${client_id}&redirect_uri=${redirect_uri}&state=${state}&scope=${scope}`;
-
     res.json({ url });
 };
 
@@ -104,6 +111,7 @@ const lineCallback = async (req, res) => {
     if (!code) return res.redirect(`${process.env.FRONTEND_URL}/login?error=no_code`);
 
     try {
+        validateOAuthState(req, 'line');
         const tokenResponse = await axios.post('https://api.line.me/oauth2/v2.1/token',
             new URLSearchParams({
                 grant_type: 'authorization_code',
@@ -115,46 +123,52 @@ const lineCallback = async (req, res) => {
         );
 
         const { id_token } = tokenResponse.data;
-        const lineUser = jwt.decode(id_token);
+        const verifyResponse = await axios.post(
+            'https://api.line.me/oauth2/v2.1/verify',
+            new URLSearchParams({
+                id_token,
+                client_id: process.env.LINE_CHANNEL_ID,
+            }),
+            { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+        );
+        const lineUser = verifyResponse.data;
         const { sub: lineId, name, picture, email } = lineUser;
 
         let user = await knex('Users').where({ LineId: lineId }).first();
 
         if (!user) {
-            if (email) {
-                const existingEmailUser = await knex('Users').where({ Email: email.toLowerCase() }).first();
-                if (existingEmailUser) {
-                    await knex('Users').where({ Id: existingEmailUser.Id }).update({
-                        LineId: lineId,
-                        AvatarUrl: picture || existingEmailUser.AvatarUrl
-                    });
-                    user = { ...existingEmailUser, LineId: lineId };
-                }
+            const preferredEmail = email ? email.toLowerCase() : `${lineId}@line.com`;
+            let safeEmail = preferredEmail;
+            const existingEmailUser = await knex('Users').where({ Email: preferredEmail }).first();
+            if (existingEmailUser && String(existingEmailUser.LineId || '') !== String(lineId)) {
+                safeEmail = `${lineId}@line.com`;
             }
 
-            if (!user) {
-                const [newUser] = await knex('Users')
-                    .insert({
-                        Username: name,
-                        Email: email ? email.toLowerCase() : `${lineId}@line.com`,
-                        LineId: lineId,
-                        AvatarUrl: picture,
-                        badminton_level: 1.00,
-                        is_profile_completed: false
-                    })
-                    .returning('*');
-                user = newUser;
-            }
+            const [newUser] = await knex('Users')
+                .insert({
+                    Username: name,
+                    Email: safeEmail,
+                    LineId: lineId,
+                    AvatarUrl: picture,
+                    badminton_level: 1.00,
+                    is_profile_completed: false
+                })
+                .returning('*');
+            user = newUser;
         }
 
         const token = jwt.sign(
-            { id: user.Id, email: user.Email, username: user.Username, avatarUrl: user.AvatarUrl },
+            { id: user.Id, email: user.Email, username: user.Username },
             JWT_SECRET,
             { expiresIn: '30d' }
         );
-        console.log("使用LINE登入成功")
+        console.log("LINE login success")
 
-        res.redirect(`${process.env.FRONTEND_URL}/login-success?token=${token}&is_profile_completed=${!!user.is_profile_completed}`);
+        const loginCode = createLoginCode({
+            token,
+            user: formatUserResponse(user)
+        });
+        res.redirect(`${process.env.FRONTEND_URL}/login-success?code=${loginCode}`);
 
     } catch (error) {
         console.error('LINE Login Error:', error.response?.data || error.message);
@@ -188,7 +202,7 @@ const liffLogin = async (req, res) => {
         }
 
         const token = jwt.sign(
-            { id: user.Id, email: user.Email, username: user.Username, avatarUrl: user.AvatarUrl },
+            { id: user.Id, email: user.Email, username: user.Username },
             process.env.JWT_SECRET,
             { expiresIn: '60d' }
         );
@@ -205,7 +219,7 @@ const liffLogin = async (req, res) => {
             }
         });
     } catch (error) {
-        res.status(401).json({ success: false, message: '入所身份驗證失敗' });
+        res.status(401).json({ success: false, message: 'LIFF login failed' });
     }
 };
 const getGoogleAuthUrl = (req, res) => {
@@ -220,7 +234,7 @@ const getGoogleAuthUrl = (req, res) => {
             'https://www.googleapis.com/auth/userinfo.profile',
             'https://www.googleapis.com/auth/userinfo.email',
         ].join(' '),
-        state: crypto.randomBytes(16).toString('hex'),
+        state: createOAuthState('google'),
     };
 
     const url = `${rootUrl}?${new URLSearchParams(options).toString()}`;
@@ -232,6 +246,7 @@ const googleCallback = async (req, res) => {
     if (!code) return res.redirect(`${process.env.FRONTEND_URL}/login?error=no_code`);
 
     try {
+        validateOAuthState(req, 'google');
         const tokenResponse = await axios.post('https://oauth2.googleapis.com/token', {
             code,
             client_id: process.env.GOOGLE_CLIENT_ID,
@@ -260,7 +275,7 @@ const googleCallback = async (req, res) => {
                 });
                 user = { ...existingEmailUser, GoogleId: googleId };
             } else {
-                // 完全新用戶，建立帳號
+                // Create a new account for first-time Google users.
                 const [newUser] = await knex('Users')
                     .insert({
                         Username: name,
@@ -276,14 +291,18 @@ const googleCallback = async (req, res) => {
         }
 
         const token = jwt.sign(
-            { id: user.Id, email: user.Email, username: user.Username, avatarUrl: user.AvatarUrl },
+            { id: user.Id, email: user.Email, username: user.Username },
             JWT_SECRET,
             { expiresIn: '30d' }
         );
 
-        console.log("使用 Google 登入成功");
+        console.log("Google login success");
 
-        res.redirect(`${process.env.FRONTEND_URL}/login-success?token=${token}&is_profile_completed=${!!user.is_profile_completed}`);
+        const loginCode = createLoginCode({
+            token,
+            user: formatUserResponse(user)
+        });
+        res.redirect(`${process.env.FRONTEND_URL}/login-success?code=${loginCode}`);
 
     } catch (error) {
         console.error('Google Login Error:', error.response?.data || error.message);
@@ -295,7 +314,7 @@ const getFacebookAuthUrl = (req, res) => {
     const options = {
         client_id: process.env.FACEBOOK_CLIENT_ID,
         redirect_uri: process.env.FACEBOOK_CALLBACK_URL,
-        state: crypto.randomBytes(16).toString('hex'),
+        state: createOAuthState('facebook'),
         scope: ['email', 'public_profile'].join(','),
         response_type: 'code',
         auth_type: 'rerequest',
@@ -308,65 +327,93 @@ const getFacebookAuthUrl = (req, res) => {
 const facebookCallback = async (req, res) => {
     const { code } = req.query;
     if (!code) return res.redirect(`${process.env.FRONTEND_URL}/login?error=no_code`);
-    const tokenResponse = await axios.get('https://graph.facebook.com/v18.0/oauth/access_token', {
-        params: {
-            client_id: process.env.FACEBOOK_CLIENT_ID,
-            client_secret: process.env.FACEBOOK_CLIENT_SECRET,
-            redirect_uri: process.env.FACEBOOK_CALLBACK_URL,
-            code,
-        }
-    });
 
-    const { access_token } = tokenResponse.data;
-    const userResponse = await axios.get('https://graph.facebook.com/me', {
-        params: {
-            fields: 'id,name,email,picture.type(large)',
-            access_token,
-        }
-    });
+    try {
+        validateOAuthState(req, 'facebook');
 
-    const { id: facebookId, name, email, picture } = userResponse.data;
-    const avatarUrl = picture?.data?.url;
+        const tokenResponse = await axios.get('https://graph.facebook.com/v18.0/oauth/access_token', {
+            params: {
+                client_id: process.env.FACEBOOK_CLIENT_ID,
+                client_secret: process.env.FACEBOOK_CLIENT_SECRET,
+                redirect_uri: process.env.FACEBOOK_CALLBACK_URL,
+                code,
+            }
+        });
 
-    let user = await knex('Users').where({ FacebookId: facebookId }).first();
+        const { access_token } = tokenResponse.data;
+        const userResponse = await axios.get('https://graph.facebook.com/me', {
+            params: {
+                fields: 'id,name,email,picture.type(large)',
+                access_token,
+            }
+        });
 
-    if (!user) {
-        const normalizedEmail = email ? email.toLowerCase() : `${facebookId}@facebook.com`;
-        const existingEmailUser = await knex('Users').where({ Email: normalizedEmail }).first();
+        const { id: facebookId, name, email, picture } = userResponse.data;
+        const avatarUrl = picture?.data?.url;
 
-        if (existingEmailUser) {
-            await knex('Users').where({ Id: existingEmailUser.Id }).update({
-                FacebookId: facebookId,
-                AvatarUrl: avatarUrl || existingEmailUser.AvatarUrl
-            });
-            user = { ...existingEmailUser, FacebookId: facebookId };
-        } else {
-            const [newUser] = await knex('Users')
-                .insert({
-                    Username: name,
-                    Email: normalizedEmail,
+        let user = await knex('Users').where({ FacebookId: facebookId }).first();
+
+        if (!user) {
+            const normalizedEmail = email ? email.toLowerCase() : `${facebookId}@facebook.com`;
+            const existingEmailUser = await knex('Users').where({ Email: normalizedEmail }).first();
+
+            if (existingEmailUser) {
+                await knex('Users').where({ Id: existingEmailUser.Id }).update({
                     FacebookId: facebookId,
-                    AvatarUrl: avatarUrl,
-                    badminton_level: 1.00,
-                    is_profile_completed: false
-                })
-                .returning('*');
-            user = newUser;
+                    AvatarUrl: avatarUrl || existingEmailUser.AvatarUrl
+                });
+                user = { ...existingEmailUser, FacebookId: facebookId };
+            } else {
+                const [newUser] = await knex('Users')
+                    .insert({
+                        Username: name,
+                        Email: normalizedEmail,
+                        FacebookId: facebookId,
+                        AvatarUrl: avatarUrl,
+                        badminton_level: 1.00,
+                        is_profile_completed: false
+                    })
+                    .returning('*');
+                user = newUser;
+            }
         }
+
+        const token = jwt.sign(
+            { id: user.Id, email: user.Email, username: user.Username },
+            JWT_SECRET,
+            { expiresIn: '30d' }
+        );
+
+        console.log("Facebook login success");
+
+        const loginCode = createLoginCode({
+            token,
+            user: formatUserResponse(user)
+        });
+        res.redirect(`${process.env.FRONTEND_URL}/login-success?code=${loginCode}`);
+    } catch (error) {
+        console.error('Facebook Login Error:', error.response?.data || error.message);
+        res.redirect(`${process.env.FRONTEND_URL}/login?error=facebook_failed`);
     }
-
-    const token = jwt.sign(
-        { id: user.Id, email: user.Email, username: user.Username, avatarUrl: user.AvatarUrl },
-        JWT_SECRET,
-        { expiresIn: '30d' }
-    );
-
-    console.log("使用 Facebook 登入成功");
-
-    res.redirect(`${process.env.FRONTEND_URL}/login-success?token=${token}&is_profile_completed=${!!user.is_profile_completed}`);
-
 };
 
+const exchangeLoginCode = async (req, res) => {
+    const { code } = req.body || {};
+    if (!code) {
+        return res.status(400).json({ success: false, message: '缺少登入 code' });
+    }
+
+    const payload = consumeLoginCode(code);
+    if (!payload) {
+        return res.status(400).json({ success: false, message: '登入 code 無效或已過期' });
+    }
+
+    return res.json({
+        success: true,
+        token: payload.token,
+        user: payload.user
+    });
+};
 const rating = async (req, res) => {
     const { years, level } = req.body;
     const userId = req.user.id;
@@ -396,12 +443,12 @@ const rating = async (req, res) => {
 
         res.json({
             success: true,
-            message: "診斷完畢，成癮指數已紀錄",
+            message: "Profile updated",
             user: updatedUser
         });
     } catch (error) {
-        console.error("更新評量失敗:", error);
-        res.status(500).json({ error: "系統無法紀錄您的診斷結果" });
+        console.error("Update profile failed:", error);
+        res.status(500).json({ error: "Failed to update profile" });
     }
 };
 const getMe = async (req, res) => {
@@ -433,16 +480,16 @@ const updateAvatar = async (req, res) => {
         const { avatarDataUrl } = req.body;
 
         if (!avatarDataUrl || typeof avatarDataUrl !== 'string') {
-            return res.status(400).json({ success: false, message: '缺少頭貼資料' });
+            return res.status(400).json({ success: false, message: 'avatarDataUrl is required' });
         }
 
         const isDataImage = /^data:image\/(png|jpeg|jpg|webp);base64,/.test(avatarDataUrl);
         if (!isDataImage) {
-            return res.status(400).json({ success: false, message: '僅支援 PNG/JPG/WEBP 圖片格式' });
+            return res.status(400).json({ success: false, message: 'Avatar must be PNG/JPG/WEBP data URL' });
         }
 
         if (avatarDataUrl.length > 800000) {
-            return res.status(400).json({ success: false, message: '圖片過大，請縮小後再上傳' });
+            return res.status(400).json({ success: false, message: 'Avatar is too large' });
         }
 
         await knex('Users')
@@ -450,11 +497,11 @@ const updateAvatar = async (req, res) => {
             .update({ AvatarUrl: avatarDataUrl });
 
         const user = await knex('Users').where({ Id: userId }).first();
-        if (!user) return res.status(404).json({ success: false, message: '找不到使用者' });
+        if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
         return res.json({
             success: true,
-            message: '頭貼更新成功',
+            message: 'Avatar updated',
             user: {
                 id: user.Id,
                 username: user.Username,
@@ -465,10 +512,14 @@ const updateAvatar = async (req, res) => {
             }
         });
     } catch (error) {
-        return res.status(500).json({ success: false, message: '頭貼更新失敗' });
+        return res.status(500).json({ success: false, message: 'Failed to update avatar' });
     }
 };
 
 module.exports = {
-    createUser, loginUser, logoutUser, getLineAuthUrl, lineCallback, liffLogin, rating, getMe, updateAvatar, googleCallback, getGoogleAuthUrl, facebookCallback, getFacebookAuthUrl
+    createUser, loginUser, logoutUser, getLineAuthUrl, lineCallback, liffLogin, rating, getMe, updateAvatar, googleCallback, getGoogleAuthUrl, facebookCallback, getFacebookAuthUrl, exchangeLoginCode
 };
+
+
+
+

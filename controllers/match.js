@@ -1,4 +1,4 @@
-const knex = require('../db');
+﻿const knex = require('../db');
 const { broadcastToGame } = require('../wsServer');
 
 const ensureNumber = (val) => {
@@ -71,11 +71,11 @@ const setNextGroup = async (req, res) => {
     const hostUserId = req.user?.id || req.user?.UserId;
 
     if (!gameId) {
-        return res.status(400).json({ success: false, message: '缺少 gameId' });
+        return res.status(400).json({ success: false, message: 'gameId is required' });
     }
 
     if (!Array.isArray(slots) || slots.length !== 4) {
-        return res.status(400).json({ success: false, message: 'slots 格式錯誤，必須是 4 格陣列' });
+        return res.status(400).json({ success: false, message: 'slots must be an array of 4 items' });
     }
 
     const normalizedSlots = slots.map((val) => {
@@ -85,19 +85,19 @@ const setNextGroup = async (req, res) => {
     });
 
     if (normalizedSlots.some(val => Number.isNaN(val))) {
-        return res.status(400).json({ success: false, message: 'slots 內容錯誤，必須是 playerId 或 null' });
+        return res.status(400).json({ success: false, message: 'slots must contain playerId or null' });
     }
 
     const nonNullSlots = normalizedSlots.filter(val => val !== null);
     const uniqueIds = [...new Set(nonNullSlots)];
     if (uniqueIds.length !== nonNullSlots.length) {
-        return res.status(400).json({ success: false, message: '預備組不可有重複球員' });
+        return res.status(400).json({ success: false, message: 'slots contain duplicate players' });
     }
 
     try {
         const game = await knex('Games').where({ GameId: gameId }).select('HostID').first();
         if (!game || String(game.HostID) !== String(hostUserId)) {
-            return res.status(403).json({ success: false, message: '僅團主可設定預備組' });
+            return res.status(403).json({ success: false, message: 'Only host can update next group' });
         }
 
         if (uniqueIds.length > 0) {
@@ -109,7 +109,7 @@ const setNextGroup = async (req, res) => {
                 .select('Id');
 
             if (validRows.length !== uniqueIds.length) {
-                return res.status(400).json({ success: false, message: '預備組包含不可用球員（非待命、已取消或不屬於本場）' });
+                return res.status(400).json({ success: false, message: 'slots contain invalid or non-idle players' });
             }
         }
 
@@ -130,7 +130,7 @@ const setNextGroup = async (req, res) => {
         broadcastToGame(gameId);
         return res.json({ success: true, data: { slotPlayerIds: normalizedSlots } });
     } catch (error) {
-        return res.status(500).json({ success: false, message: '設定預備組失敗' });
+        return res.status(500).json({ success: false, message: 'Failed to save next group' });
     }
 };
 
@@ -150,25 +150,31 @@ const checkin = async (req, res) => {
         });
 
     if (updatedCount === 0) {
-        return res.status(404).json({ success: false, message: '找不到掛號資訊' });
+        return res.status(404).json({ success: false, message: 'No player waiting for check-in' });
     }
 
     broadcastToGame(gameId);
     res.json({
         success: true,
-        message: '報到成功，已為您及同伴簽下場蹤'
+        message: 'Check-in success'
     });
 };
 
 const startMatch = async (req, res) => {
     const { gameId, courtNumber, players } = req.body;
+    const hostUserId = req.user?.id || req.user?.UserId;
 
     try {
         await knex.transaction(async (trx) => {
+            const game = await trx('Games').where({ GameId: gameId }).select('HostID').first();
+            if (!game || String(game.HostID) !== String(hostUserId)) {
+                throw new Error('Only host can start matches');
+            }
+
             const existingMatch = await trx('Matches')
                 .where({ game_id: gameId, court_number: courtNumber, match_status: 'active' })
                 .first();
-            if (existingMatch) throw new Error(`場地 ${courtNumber} 正在對戰中`);
+            if (existingMatch) throw new Error(`Court ${courtNumber} already has an active match`);
 
             await trx('Matches').insert({
                 game_id: gameId,
@@ -200,7 +206,7 @@ const startMatch = async (req, res) => {
         });
 
         broadcastToGame(gameId);
-        res.json({ success: true, message: `場地 ${courtNumber} 已開打` });
+        res.json({ success: true, message: `Court ${courtNumber} match started` });
     } catch (error) {
         res.status(400).json({ success: false, message: error.message });
     }
@@ -273,9 +279,15 @@ const getLiveStatus = async (req, res) => {
 
 const finishMatch = async (req, res) => {
     const { matchId, winner } = req.body;
+    const hostUserId = req.user?.id || req.user?.UserId;
     await knex.transaction(async (trx) => {
         const match = await trx('Matches').where({ id: matchId }).first();
-        if (!match) throw new Error("找不到比賽紀錄");
+        if (!match) throw new Error('Match not found');
+
+        const game = await trx('Games').where({ GameId: match.game_id }).select('HostID').first();
+        if (!game || String(game.HostID) !== String(hostUserId)) {
+            throw new Error('Only host can finish matches');
+        }
 
         const playerIds = [match.player_a1, match.player_a2, match.player_b1, match.player_b2].filter(Boolean);
 
@@ -352,8 +364,8 @@ const finishMatch = async (req, res) => {
         res.json({
             success: true,
             message: isGraded
-                ? '戰報錄入成功，病友戰力與認證進度已更新'
-                : (virtualCount >= 2 ? '同伴人數過多 (>=2)，本局不計入認證' : '對戰已結束 (未計分)')
+                ? 'Match finished and rating updated'
+                : (virtualCount >= 2 ? 'Match finished (rating skipped: too many virtual players)' : 'Match finished')
         });
     });
 };
@@ -411,8 +423,8 @@ const hostCheckin = async (req, res) => {
 
     try {
         const game = await knex('Games').where({ GameId: gameId }).select('HostID').first();
-        if (!game || game.HostID !== hostUserId) {
-            return res.status(403).json({ success: false, message: '僅團主可執行此操作' });
+        if (!game || String(game.HostID) !== String(hostUserId)) {
+            return res.status(403).json({ success: false, message: 'Only host can check in players' });
         }
 
         const targetPlayer = await knex('GamePlayers')
@@ -422,7 +434,7 @@ const hostCheckin = async (req, res) => {
             .first();
 
         if (!targetPlayer) {
-            return res.status(404).json({ success: false, message: '找不到該掛號資訊' });
+            return res.status(404).json({ success: false, message: 'Player not found in this game' });
         }
 
         const updatedCount = await knex('GamePlayers')
@@ -431,11 +443,14 @@ const hostCheckin = async (req, res) => {
             .update({ status: 'idle', check_in_at: knex.fn.now() });
 
         broadcastToGame(gameId);
-        res.json({ success: true, message: `已為該病友報到 (${updatedCount} 筆更新)` });
+        res.json({ success: true, message: `Checked in ${updatedCount} player record(s)` });
     } catch (err) {
         console.error('hostCheckin error:', err);
-        res.status(500).json({ success: false, message: '報到失敗' });
+        res.status(500).json({ success: false, message: 'Host check-in failed' });
     }
 };
 
 module.exports = { checkin, hostCheckin, setNextGroup, startMatch, getLiveStatus, finishMatch, getMyHistory };
+
+
+

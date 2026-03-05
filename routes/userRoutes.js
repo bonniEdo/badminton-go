@@ -1,12 +1,13 @@
 const express = require('express');
 const router = express.Router();
-const { createUser, loginUser, getLineAuthUrl, lineCallback, liffLogin, rating, getMe, updateAvatar, googleCallback, getGoogleAuthUrl, facebookCallback, getFacebookAuthUrl } = require('../controllers/user')
+const { createUser, loginUser, getLineAuthUrl, lineCallback, liffLogin, rating, getMe, updateAvatar, googleCallback, getGoogleAuthUrl, facebookCallback, getFacebookAuthUrl, exchangeLoginCode } = require('../controllers/user')
 const verifyToken = require('../middlewares/auth');
 
 
 router.post('/create', createUser);
 
 router.post('/login', loginUser);
+router.post('/exchange-login-code', exchangeLoginCode);
 router.get('/line-auth', getLineAuthUrl);
 router.get('/line/callback', lineCallback);
 router.get('/google-auth', getGoogleAuthUrl);
