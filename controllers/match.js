@@ -6,6 +6,36 @@ const ensureNumber = (val) => {
     return isNaN(num) ? 1.0 : num;
 };
 
+const pairKey = (id1, id2) => {
+    const a = Number(id1);
+    const b = Number(id2);
+    if (!a || !b) return null;
+    return a < b ? `${a}-${b}` : `${b}-${a}`;
+};
+
+const getPairingAssistData = async (gameId, recentWindow = 5) => {
+    const finishedMatches = await knex('Matches')
+        .where({ game_id: gameId, match_status: 'finished' })
+        .select('id', 'player_a1', 'player_a2', 'player_b1', 'player_b2')
+        .orderBy('end_time', 'desc')
+        .limit(recentWindow);
+
+    const teammatePairCounts = {};
+    for (const m of finishedMatches) {
+        const aKey = pairKey(m.player_a1, m.player_a2);
+        const bKey = pairKey(m.player_b1, m.player_b2);
+        if (aKey) teammatePairCounts[aKey] = (teammatePairCounts[aKey] || 0) + 1;
+        if (bKey) teammatePairCounts[bKey] = (teammatePairCounts[bKey] || 0) + 1;
+    }
+
+    const latestFinishedMatchId = finishedMatches.length > 0 ? finishedMatches[0].id : 0;
+    return {
+        recentWindow,
+        latestFinishedMatchId,
+        teammatePairCounts
+    };
+};
+
 const getNextGroupData = async (gameId, formattedPlayers) => {
     const row = await knex('GameNextGroups')
         .where({ game_id: gameId })
@@ -227,6 +257,7 @@ const getLiveStatus = async (req, res) => {
     }) : null;
 
     const nextGroup = await getNextGroupData(gameId, formattedPlayers);
+    const pairingAssist = await getPairingAssistData(gameId);
 
     res.json({
         success: true,
@@ -234,7 +265,8 @@ const getLiveStatus = async (req, res) => {
             players: formattedPlayers,
             matches: activeMatches,
             myPlayerId: myEntry?.playerId || null,
-            nextGroup
+            nextGroup,
+            pairingAssist
         }
     });
 };
