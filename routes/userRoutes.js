@@ -33,7 +33,7 @@ router.get('/facebook/callback', facebookCallback);
 router.post('/liff-login', liffLogin);
 router.post('/complete-rating', verifyToken, rating);
 router.get('/me', verifyToken, getMe);
-router.get('/public/:id', getPublicProfile);
+router.get('/public/:id', verifyToken, getPublicProfile);
 router.get('/avatar/:id', getAvatarById);
 router.post('/avatar', verifyToken, updateAvatar);
 

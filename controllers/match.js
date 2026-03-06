@@ -6,6 +6,10 @@ const ensureNumber = (val) => {
     return isNaN(num) ? 1.0 : num;
 };
 
+const VERIFIED_MATCHES_THRESHOLD = 3;
+const K_VERIFIED = 0.6;
+const K_UNVERIFIED = 1.0;
+
 const pairKey = (id1, id2) => {
     const a = Number(id1);
     const b = Number(id2);
@@ -328,26 +332,27 @@ const finishMatch = async (req, res) => {
                 pMap[p.Id] = {
                     level: !!p.IsVirtual ? ensureNumber(p.FriendLevel) : ensureNumber(p.badminton_level),
                     isVirtual: !!p.IsVirtual,
-                    userId: p.UserId
+                    userId: p.UserId,
+                    verifiedMatches: Number(p.verified_matches || 0)
                 };
             });
 
             const ratingA = teamAIds.reduce((sum, id) => sum + pMap[id].level, 0) / teamAIds.length;
             const ratingB = teamBIds.reduce((sum, id) => sum + pMap[id].level, 0) / teamBIds.length;
 
-            const K = 0.5;
             const DIVISOR = 5;
             const expectedA = 1 / (1 + Math.pow(10, (ratingB - ratingA) / DIVISOR));
             const scoreA = (winner === 'A') ? 1 : 0;
-
-            const changeA = K * (scoreA - expectedA);
-            const changeB = -changeA;
+            const baseDeltaA = scoreA - expectedA;
+            const baseDeltaB = -baseDeltaA;
 
             for (let pid of playerIds) {
                 const p = pMap[pid];
                 if (p.isVirtual) continue;
 
-                const change = teamAIds.includes(pid) ? changeA : changeB;
+                const kFactor = p.verifiedMatches >= VERIFIED_MATCHES_THRESHOLD ? K_VERIFIED : K_UNVERIFIED;
+                const baseDelta = teamAIds.includes(pid) ? baseDeltaA : baseDeltaB;
+                const change = kFactor * baseDelta;
                 const newLevel = Math.max(1.0, parseFloat((p.level + change).toFixed(2)));
 
                 await trx('Users').where({ Id: p.userId }).update({
