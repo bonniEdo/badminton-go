@@ -239,7 +239,10 @@ const getLiveStatus = async (req, res) => {
     const { gameId } = req.params;
     if (!gameId || gameId === 'undefined') return res.status(400).json({ success: false, message: "GameId is required" });
 
-    const game = await knex('Games').where({ GameId: gameId }).select('HostID').first();
+    const game = await knex('Games')
+        .where({ GameId: gameId })
+        .select('HostID', 'IsActive', 'CanceledAt')
+        .first();
     const hostId = game ? game.HostID : null;
 
     const players = await knex('GamePlayers')
@@ -283,6 +286,9 @@ const getLiveStatus = async (req, res) => {
 
     const activeMatches = await knex('Matches').where({ game_id: gameId, match_status: 'active' }).select('*');
 
+    const autoClosed = !!(game && (!game.IsActive || !!game.CanceledAt));
+    const autoCloseAt = null;
+
     const userId = req.user?.id;
     const myEntry = userId ? formattedPlayers.find(p => {
         const raw = players.find(r => r.playerId === p.playerId);
@@ -299,7 +305,9 @@ const getLiveStatus = async (req, res) => {
             matches: activeMatches,
             myPlayerId: myEntry?.playerId || null,
             nextGroup,
-            pairingAssist
+            pairingAssist,
+            autoClosed,
+            autoCloseAt
         }
     });
 };
