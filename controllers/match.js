@@ -404,11 +404,44 @@ const getMyHistory = async (req, res) => {
             'Matches.winner',
             'Matches.player_a1',
             'Matches.player_a2',
+            'Matches.player_b1',
+            'Matches.player_b2',
             'Games.Location',
             'Games.GameDateTime'
         )
         .orderBy('Matches.id', 'desc')
         .limit(20);
+
+    const allPlayerIds = [...new Set(
+        myMatches.flatMap(m => [m.player_a1, m.player_a2, m.player_b1, m.player_b2].filter(Boolean))
+    )];
+
+    const playerRows = allPlayerIds.length > 0
+        ? await knex('GamePlayers')
+            .leftJoin('Users', 'GamePlayers.UserId', 'Users.Id')
+            .whereIn('GamePlayers.Id', allPlayerIds)
+            .select(
+                'GamePlayers.Id',
+                'GamePlayers.UserId',
+                'GamePlayers.IsVirtual',
+                'Users.Username',
+                'Users.AvatarUrl'
+            )
+        : [];
+
+    const playerNameMap = {};
+    const playerInfoMap = {};
+    playerRows.forEach((p) => {
+        const baseName = p.Username || '未命名球友';
+        const displayName = p.IsVirtual ? `${baseName} +1` : baseName;
+        playerNameMap[p.Id] = displayName;
+        playerInfoMap[p.Id] = {
+            playerId: p.Id,
+            userId: p.IsVirtual ? null : p.UserId,
+            displayName,
+            avatarUrl: buildAvatarListUrl(req, p.UserId, p.AvatarUrl)
+        };
+    });
 
     const formattedHistory = myMatches.map(m => {
         let result = 'draw';
@@ -420,12 +453,33 @@ const getMyHistory = async (req, res) => {
             result = (m.winner === myTeam) ? 'win' : 'loss';
         }
 
+        const teamAIds = [m.player_a1, m.player_a2].filter(Boolean);
+        const teamBIds = [m.player_b1, m.player_b2].filter(Boolean);
+        const isTeamA = teamAIds.some(pid => myPlayerIds.includes(pid));
+        const myTeamIds = isTeamA ? teamAIds : teamBIds;
+        const opponentTeamIds = isTeamA ? teamBIds : teamAIds;
+
+        const teammateNames = myTeamIds
+            .filter(pid => !myPlayerIds.includes(pid))
+            .map(pid => playerNameMap[pid] || `#${pid}`);
+        const opponentNames = opponentTeamIds
+            .map(pid => playerNameMap[pid] || `#${pid}`);
+        const teammatePlayers = myTeamIds
+            .filter(pid => !myPlayerIds.includes(pid))
+            .map(pid => playerInfoMap[pid] || { playerId: pid, userId: null, displayName: `#${pid}`, avatarUrl: null });
+        const opponentPlayers = opponentTeamIds
+            .map(pid => playerInfoMap[pid] || { playerId: pid, userId: null, displayName: `#${pid}`, avatarUrl: null });
+
         return {
             match_id: m.id,
             court_number: m.court_number,
             location: m.Location,
             result: result,
-            date: m.GameDateTime
+            date: m.GameDateTime,
+            teammateNames,
+            opponentNames,
+            teammatePlayers,
+            opponentPlayers
         };
     });
 
@@ -466,6 +520,4 @@ const hostCheckin = async (req, res) => {
 };
 
 module.exports = { checkin, hostCheckin, setNextGroup, startMatch, getLiveStatus, finishMatch, getMyHistory };
-
-
 
