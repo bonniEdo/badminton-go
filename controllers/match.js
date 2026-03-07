@@ -6,6 +6,16 @@ const ensureNumber = (val) => {
     return isNaN(num) ? 1.0 : num;
 };
 
+const isVirtualPlayer = (row) => {
+    if (!row) return false;
+    if (row.IsVirtual === true || row.IsVirtual === 1) return true;
+    if (typeof row.IsVirtual === 'string') {
+        const flag = row.IsVirtual.toLowerCase();
+        if (flag === 'true' || flag === 't' || flag === '1') return true;
+    }
+    return row.FriendLevel !== null && row.FriendLevel !== undefined;
+};
+
 const VERIFIED_MATCHES_THRESHOLD = 3;
 const K_VERIFIED = 0.6;
 const K_UNVERIFIED = 1.0;
@@ -253,27 +263,30 @@ const getLiveStatus = async (req, res) => {
             'GamePlayers.paid_at'
         );
 
-    const formattedPlayers = players.map(p => ({
+    const formattedPlayers = players.map(p => {
+        const virtualLike = isVirtualPlayer(p);
+        return ({
         playerId: p.playerId,
-        userId: p.IsVirtual ? null : p.UserId,
-        displayName: p.IsVirtual ? `${p.Username} +1` : p.Username,
+        userId: virtualLike ? null : p.UserId,
+        displayName: virtualLike ? `${p.Username} +1` : p.Username,
         avatarUrl: buildAvatarListUrl(req, p.UserId, p.AvatarUrl),
         status: p.status,
         enrollStatus: p.enrollStatus,
-        level: p.IsVirtual ? ensureNumber(p.FriendLevel) : ensureNumber(p.badminton_level),
+        level: virtualLike ? ensureNumber(p.FriendLevel) : ensureNumber(p.badminton_level),
         games_played: p.games_played,
         verified_matches: p.verified_matches || 0,
         check_in_at: p.check_in_at,
         paid_at: p.paid_at || null,
-        isHost: !p.IsVirtual && p.UserId === hostId,
-    }));
+        isHost: !virtualLike && p.UserId === hostId,
+    });
+    });
 
     const activeMatches = await knex('Matches').where({ game_id: gameId, match_status: 'active' }).select('*');
 
     const userId = req.user?.id;
     const myEntry = userId ? formattedPlayers.find(p => {
         const raw = players.find(r => r.playerId === p.playerId);
-        return raw && !raw.IsVirtual && raw.UserId === userId;
+        return raw && !isVirtualPlayer(raw) && raw.UserId === userId;
     }) : null;
 
     const nextGroup = await getNextGroupData(gameId, formattedPlayers);
@@ -424,6 +437,7 @@ const getMyHistory = async (req, res) => {
                 'GamePlayers.Id',
                 'GamePlayers.UserId',
                 'GamePlayers.IsVirtual',
+                'GamePlayers.FriendLevel',
                 'Users.Username',
                 'Users.AvatarUrl'
             )
@@ -432,12 +446,13 @@ const getMyHistory = async (req, res) => {
     const playerNameMap = {};
     const playerInfoMap = {};
     playerRows.forEach((p) => {
+        const virtualLike = isVirtualPlayer(p);
         const baseName = p.Username || '未命名球友';
-        const displayName = p.IsVirtual ? `${baseName} +1` : baseName;
+        const displayName = virtualLike ? `${baseName} +1` : baseName;
         playerNameMap[p.Id] = displayName;
         playerInfoMap[p.Id] = {
             playerId: p.Id,
-            userId: p.IsVirtual ? null : p.UserId,
+            userId: virtualLike ? null : p.UserId,
             displayName,
             avatarUrl: buildAvatarListUrl(req, p.UserId, p.AvatarUrl)
         };
@@ -520,4 +535,3 @@ const hostCheckin = async (req, res) => {
 };
 
 module.exports = { checkin, hostCheckin, setNextGroup, startMatch, getLiveStatus, finishMatch, getMyHistory };
-
