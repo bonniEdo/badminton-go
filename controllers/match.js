@@ -400,7 +400,9 @@ const finishMatch = async (req, res) => {
 
 const getMyHistory = async (req, res) => {
     const userId = req.user?.id || req.user?.UserId;
-    const myEntries = await knex('GamePlayers').where({ UserId: userId }).select('Id');
+    const myEntries = await knex('GamePlayers')
+        .where({ UserId: userId, IsVirtual: false })
+        .select('Id');
     const myPlayerIds = myEntries.map(p => p.Id);
 
     if (myPlayerIds.length === 0) return res.json({ success: true, data: [] });
