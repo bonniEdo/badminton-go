@@ -1,12 +1,13 @@
 const express = require('express');
 const router = express.Router();
-const { createGame, getGame, getAllGames, deleteGame, joinGame, getJoinedGames, cancelJoin, playerList, addFriend, getGameById, markPaid } = require('../controllers/game')
+const { createGame, updateGame, getGame, getAllGames, deleteGame, joinGame, getJoinedGames, cancelJoin, playerList, addFriend, getGameById, markPaid } = require('../controllers/game')
 const verifyToken = require('../middlewares/auth');
 const optionalAuth = require('../middlewares/optionalAuth');
 
 
 
 router.post('/create', verifyToken, createGame);
+router.put('/:id', verifyToken, updateGame);
 router.get('/mygame', verifyToken, getGame);
 
 router.get('/activegames', optionalAuth, getAllGames);

@@ -76,6 +76,74 @@ const createGame = async (req, res) => {
 
     res.status(201).json({ success: true, message: "開診成功", game: newGame });
 };
+
+const updateGame = async (req, res) => {
+    const gameId = Number(req.params.id);
+    const userId = req.user.id;
+    const {
+        title, gameDate, gameTime, endTime, location,
+        courtNumber, courtCount,
+        maxPlayers, price, notes, phone
+    } = req.body;
+
+    if (!gameId) throw new AppError("缺少療程編號", 400);
+
+    const game = await knex("Games").where({ GameId: gameId }).first();
+    if (!game) throw new AppError("找不到此療程", 404);
+    if (String(game.HostID) !== String(userId)) throw new AppError("權限不足，只有主治可以編輯療程", 403);
+    if (!game.IsActive || game.CanceledAt) throw new AppError("此療程已終止，無法編輯", 400);
+
+    const nextMaxPlayers = Number(maxPlayers);
+    if (!Number.isFinite(nextMaxPlayers) || nextMaxPlayers <= 0) {
+        throw new AppError("人數上限格式錯誤", 400);
+    }
+
+    const confirmedRes = await knex("GamePlayers")
+        .where({ GameId: gameId, Status: "CONFIRMED", IsVirtual: false })
+        .sum({ total: knex.raw('1 + COALESCE("FriendCount", 0)') })
+        .first();
+    const confirmedCount = Number(confirmedRes?.total || 0);
+    if (nextMaxPlayers < confirmedCount) {
+        throw new AppError(`人數上限不可低於目前已確認人數（${confirmedCount}）`, 400);
+    }
+
+    const trimmedLocation = location ? location.trim() : "";
+    const gameDateTime = `${gameDate} ${gameTime}`;
+
+    const existingGame = await knex("Games")
+        .where({
+            HostID: userId,
+            GameDateTime: gameDateTime,
+            Location: trimmedLocation,
+            CourtNumber: courtNumber || null,
+            IsActive: true,
+        })
+        .whereNot({ GameId: gameId })
+        .first();
+
+    if (existingGame) {
+        throw new AppError("已有同時段同場所的療程囉！", 400);
+    }
+
+    const [updatedGame] = await knex("Games")
+        .where({ GameId: gameId })
+        .update({
+            Title: title,
+            GameDateTime: gameDateTime,
+            EndTime: endTime,
+            Location: trimmedLocation,
+            CourtNumber: courtNumber || null,
+            CourtCount: Number(courtCount) || 1,
+            MaxPlayers: nextMaxPlayers,
+            Price: Number(price),
+            Notes: notes,
+            HostContact: phone,
+        })
+        .returning("*");
+
+    res.status(200).json({ success: true, message: "療程更新成功", game: updatedGame });
+};
+
 const currentPlayersSubquery = () => {
     return knex("GamePlayers")
         .whereColumn("GamePlayers.GameId", "Games.GameId")
@@ -650,6 +718,7 @@ const markPaid = async (req, res) => {
 
 module.exports = {
     createGame,
+    updateGame,
     getGame,
     getAllGames,
     deleteGame,
