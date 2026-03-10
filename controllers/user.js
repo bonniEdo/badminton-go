@@ -10,6 +10,65 @@ const axios = require('axios');
 const { createLoginCode, consumeLoginCode } = require('../utils/loginCodeStore');
 const { createOAuthState, consumeOAuthState } = require('../utils/oauthStateStore');
 
+const parseAllowlist = (rawValue) => String(rawValue || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+const normalizeOrigin = (urlValue, label) => {
+    try {
+        return new URL(urlValue).origin;
+    } catch (_) {
+        throw new AppError(`${label} must be a valid absolute URL`, 500);
+    }
+};
+
+const normalizeBaseUrl = (urlValue, label) => {
+    try {
+        const parsed = new URL(urlValue);
+        return parsed.origin;
+    } catch (_) {
+        throw new AppError(`${label} must be a valid absolute URL`, 500);
+    }
+};
+
+const getValidatedEnvUrl = (envKey, allowlistKey) => {
+    const envValue = String(process.env[envKey] || '').trim();
+    if (!envValue) {
+        throw new AppError(`${envKey} is not configured`, 500);
+    }
+
+    const targetOrigin = normalizeOrigin(envValue, envKey);
+    const allowlist = parseAllowlist(process.env[allowlistKey]);
+    if (allowlist.length === 0) {
+        throw new AppError(`${allowlistKey} is not configured`, 500);
+    }
+
+    const allowedOrigins = allowlist.map((item) => normalizeOrigin(item, allowlistKey));
+    if (!allowedOrigins.includes(targetOrigin)) {
+        throw new AppError(`${envKey} origin is not allowed`, 500);
+    }
+
+    return normalizeBaseUrl(envValue, envKey);
+};
+
+const getFrontendBaseUrl = () => getValidatedEnvUrl('FRONTEND_URL', 'OAUTH_FRONTEND_URL_ALLOWLIST');
+const getLineCallbackUrl = () => getValidatedEnvUrl('LINE_CALLBACK_URL', 'OAUTH_CALLBACK_URL_ALLOWLIST');
+const getGoogleCallbackUrl = () => getValidatedEnvUrl('GOOGLE_CALLBACK_URL', 'OAUTH_CALLBACK_URL_ALLOWLIST');
+const getFacebookCallbackUrl = () => getValidatedEnvUrl('FACEBOOK_CALLBACK_URL', 'OAUTH_CALLBACK_URL_ALLOWLIST');
+
+const redirectToFrontend = (res, pathWithQuery) => {
+    try {
+        return res.redirect(`${getFrontendBaseUrl()}${pathWithQuery}`);
+    } catch (error) {
+        console.error('OAuth redirect blocked:', error.message);
+        return res.status(error.statusCode || 500).json({
+            success: false,
+            message: 'OAuth redirect blocked by URL allowlist'
+        });
+    }
+};
+
 const validateOAuthState = (req, provider) => {
     const incomingState = req.query?.state;
     if (!consumeOAuthState(provider, incomingState)) {
@@ -107,7 +166,7 @@ const logoutUser = async (req, res) => {
 const getLineAuthUrl = (req, res) => {
     const state = createOAuthState('line');
     const client_id = process.env.LINE_CHANNEL_ID;
-    const redirect_uri = encodeURIComponent(process.env.LINE_CALLBACK_URL);
+    const redirect_uri = encodeURIComponent(getLineCallbackUrl());
     const scope = 'profile openid email';
 
     const url = `https://access.line.me/oauth2/v2.1/authorize?response_type=code&client_id=${client_id}&redirect_uri=${redirect_uri}&state=${state}&scope=${scope}`;
@@ -116,15 +175,16 @@ const getLineAuthUrl = (req, res) => {
 
 const lineCallback = async (req, res) => {
     const { code } = req.query;
-    if (!code) return res.redirect(`${process.env.FRONTEND_URL}/login?error=no_code`);
+    if (!code) return redirectToFrontend(res, '/login?error=no_code');
 
     try {
         validateOAuthState(req, 'line');
+        const lineCallbackUrl = getLineCallbackUrl();
         const tokenResponse = await axios.post('https://api.line.me/oauth2/v2.1/token',
             new URLSearchParams({
                 grant_type: 'authorization_code',
                 code,
-                redirect_uri: process.env.LINE_CALLBACK_URL,
+                redirect_uri: lineCallbackUrl,
                 client_id: process.env.LINE_CHANNEL_ID,
                 client_secret: process.env.LINE_CHANNEL_SECRET,
             }), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
@@ -176,11 +236,11 @@ const lineCallback = async (req, res) => {
             token,
             user: formatUserResponse(user)
         });
-        res.redirect(`${process.env.FRONTEND_URL}/login-success?code=${loginCode}`);
+        return redirectToFrontend(res, `/login-success?code=${loginCode}`);
 
     } catch (error) {
         console.error('LINE Login Error:', error.response?.data || error.message);
-        res.redirect(`${process.env.FRONTEND_URL}/login?error=line_failed`);
+        return redirectToFrontend(res, '/login?error=line_failed');
     }
 };
 
@@ -233,7 +293,7 @@ const liffLogin = async (req, res) => {
 const getGoogleAuthUrl = (req, res) => {
     const rootUrl = 'https://accounts.google.com/o/oauth2/v2/auth';
     const options = {
-        redirect_uri: process.env.GOOGLE_CALLBACK_URL,
+        redirect_uri: getGoogleCallbackUrl(),
         client_id: process.env.GOOGLE_CLIENT_ID,
         access_type: 'offline',
         response_type: 'code',
@@ -251,15 +311,16 @@ const getGoogleAuthUrl = (req, res) => {
 
 const googleCallback = async (req, res) => {
     const { code } = req.query;
-    if (!code) return res.redirect(`${process.env.FRONTEND_URL}/login?error=no_code`);
+    if (!code) return redirectToFrontend(res, '/login?error=no_code');
 
     try {
         validateOAuthState(req, 'google');
+        const googleCallbackUrl = getGoogleCallbackUrl();
         const tokenResponse = await axios.post('https://oauth2.googleapis.com/token', {
             code,
             client_id: process.env.GOOGLE_CLIENT_ID,
             client_secret: process.env.GOOGLE_CLIENT_SECRET,
-            redirect_uri: process.env.GOOGLE_CALLBACK_URL,
+            redirect_uri: googleCallbackUrl,
             grant_type: 'authorization_code',
         });
 
@@ -310,18 +371,18 @@ const googleCallback = async (req, res) => {
             token,
             user: formatUserResponse(user)
         });
-        res.redirect(`${process.env.FRONTEND_URL}/login-success?code=${loginCode}`);
+        return redirectToFrontend(res, `/login-success?code=${loginCode}`);
 
     } catch (error) {
         console.error('Google Login Error:', error.response?.data || error.message);
-        res.redirect(`${process.env.FRONTEND_URL}/login?error=google_failed`);
+        return redirectToFrontend(res, '/login?error=google_failed');
     }
 };
 const getFacebookAuthUrl = (req, res) => {
     const rootUrl = 'https://www.facebook.com/v18.0/dialog/oauth';
     const options = {
         client_id: process.env.FACEBOOK_CLIENT_ID,
-        redirect_uri: process.env.FACEBOOK_CALLBACK_URL,
+        redirect_uri: getFacebookCallbackUrl(),
         state: createOAuthState('facebook'),
         scope: ['email', 'public_profile'].join(','),
         response_type: 'code',
@@ -334,16 +395,17 @@ const getFacebookAuthUrl = (req, res) => {
 
 const facebookCallback = async (req, res) => {
     const { code } = req.query;
-    if (!code) return res.redirect(`${process.env.FRONTEND_URL}/login?error=no_code`);
+    if (!code) return redirectToFrontend(res, '/login?error=no_code');
 
     try {
         validateOAuthState(req, 'facebook');
+        const facebookCallbackUrl = getFacebookCallbackUrl();
 
         const tokenResponse = await axios.get('https://graph.facebook.com/v18.0/oauth/access_token', {
             params: {
                 client_id: process.env.FACEBOOK_CLIENT_ID,
                 client_secret: process.env.FACEBOOK_CLIENT_SECRET,
-                redirect_uri: process.env.FACEBOOK_CALLBACK_URL,
+                redirect_uri: facebookCallbackUrl,
                 code,
             }
         });
@@ -398,10 +460,10 @@ const facebookCallback = async (req, res) => {
             token,
             user: formatUserResponse(user)
         });
-        res.redirect(`${process.env.FRONTEND_URL}/login-success?code=${loginCode}`);
+        return redirectToFrontend(res, `/login-success?code=${loginCode}`);
     } catch (error) {
         console.error('Facebook Login Error:', error.response?.data || error.message);
-        res.redirect(`${process.env.FRONTEND_URL}/login?error=facebook_failed`);
+        return redirectToFrontend(res, '/login?error=facebook_failed');
     }
 };
 
@@ -672,7 +734,6 @@ module.exports = {
     getFacebookAuthUrl,
     exchangeLoginCode
 };
-
 
 
 
