@@ -235,11 +235,13 @@ const getAllGames = async (req, res) => {
             "Games.HostID",
             "Games.HostContact",
             knex.raw(
-                `(SELECT "FriendCount" FROM "GamePlayers" 
+                `(SELECT COALESCE(MAX("FriendCount"), 0) FROM "GamePlayers" 
                   WHERE "GamePlayers"."GameId" = "Games"."GameId" 
                   AND "GamePlayers"."UserId" = ? 
+                  AND COALESCE("GamePlayers"."IsVirtual", false) = false
+                  AND "GamePlayers"."CanceledAt" IS NULL
                   AND "GamePlayers"."Status" != 'CANCELED' 
-                  LIMIT 1) as MyFriendCount`,
+                ) as "MyFriendCount"`,
                 [userId]
             ),
 
@@ -295,14 +297,21 @@ const joinGame = async (req, res) => {
     const gameId = req.params.id;
     const userId = req.user.id;
     const { phone, numPlayers, friendLevel } = req.body;
-    const friendCount = Number(numPlayers) === 2 ? 1 : 0;
+    const requestedPlayers = Number(numPlayers || 1);
+    if (![1, 2].includes(requestedPlayers)) {
+        throw new AppError("報名人數僅限 1 或 2 位", 400);
+    }
+    const normalizedPhone = String(phone || "").replace(/\D/g, "");
+    if (!/^09\d{8}$/.test(normalizedPhone)) {
+        throw new AppError("電話格式需為 09 開頭的 10 碼", 400);
+    }
+    const friendCount = requestedPlayers === 2 ? 1 : 0;
     const totalToJoin = 1 + friendCount;
 
     const result = await knex.transaction(async (trx) => {
         const game = await trx("Games").where({ GameId: gameId }).forUpdate().first();
         if (!game) throw new AppError("沒有此療程", 404);
         if (!game.IsActive || game.CanceledAt) throw new AppError("此療程已被終止", 400);
-        if (!phone) throw new AppError("缺少電話", 400);
 
         const existingRecord = await trx("GamePlayers")
             .where({ GameId: gameId, UserId: userId, IsVirtual: false })
@@ -334,7 +343,7 @@ const joinGame = async (req, res) => {
 
         const commonPayload = {
             Status: status,
-            PhoneNumber: phone,
+            PhoneNumber: normalizedPhone,
             JoinedAt: trx.fn.now(),
             CanceledAt: null,
             status: "waiting_checkin",
@@ -395,7 +404,7 @@ const joinGame = async (req, res) => {
 
     res.status(201).json({
         success: true,
-        message: result.status === "CONFIRMED" ? "掛號成功" : `候補第 ${result.waitlistOrder} 位`,
+        message: result.status === "CONFIRMED" ? "報名成功" : `候補第 ${result.waitlistOrder} 位`,
         currentPlayers: result.finalTotal,
     });
 };
@@ -570,9 +579,12 @@ const playerList = async (req, res) => {
     });
 };
 const addFriend = async (req, res) => {
-    const gameId = parseInt(req.params.id);
+    const gameId = Number(req.params.id);
     const userId = req.user?.id;
     const { friendLevel } = req.body;
+    if (!Number.isInteger(gameId) || gameId <= 0) {
+        throw new AppError("缺少療程編號", 400);
+    }
 
     const result = await knex.transaction(async (trx) => {
         const player = await trx("GamePlayers")
@@ -581,6 +593,10 @@ const addFriend = async (req, res) => {
             .first();
 
         if (!player) throw new Error("找不到您的掛號紀錄");
+        if (player.Status === "CANCELED") throw new AppError("找不到您的掛號紀錄", 404);
+        if (Number(player.FriendCount || 0) >= 1) {
+            throw new AppError("每位會員最多幫一人報名", 400);
+        }
 
         let initialStatus = "waiting_checkin";
         let initialCheckInAt = null;
@@ -604,6 +620,10 @@ const addFriend = async (req, res) => {
         const existingVirtual = await trx("GamePlayers")
             .where({ GameId: gameId, UserId: userId, IsVirtual: true })
             .first();
+
+        if (existingVirtual && existingVirtual.Status !== "CANCELED") {
+            throw new AppError("每位會員最多幫一人報名", 400);
+        }
 
         if (existingVirtual) {
             await trx("GamePlayers")
@@ -644,7 +664,7 @@ const addFriend = async (req, res) => {
 
     res.status(200).json({
         success: true,
-        message: "已成功為同伴辦理入所手續",
+        message: "報名成功",
         currentPlayers: result.finalTotal
     });
 };
