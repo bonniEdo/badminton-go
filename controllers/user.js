@@ -7,6 +7,7 @@ const JWT_SECRET = process.env.JWT_SECRET;
 const AppError = require('../utils/appError');
 const validator = require('validator');
 const axios = require('axios');
+const dayjs = require('dayjs');
 const { createLoginCode, consumeLoginCode } = require('../utils/loginCodeStore');
 const { createOAuthState, consumeOAuthState } = require('../utils/oauthStateStore');
 
@@ -95,6 +96,7 @@ const formatUserResponse = (user) => ({
     avatarUrl: user.AvatarUrl || user.avatar_url,
     is_profile_completed: !!user.is_profile_completed,
     badminton_level: user.badminton_level,
+    is_ranking_public: user.is_ranking_public !== false,
 });
 
 const buildAvatarAssetUrl = (req, userId, avatarUrl) => {
@@ -164,6 +166,7 @@ const loginUser = async (req, res) => {
             username: user.Username,
             is_profile_completed: !!user.is_profile_completed,
             badminton_level: user.badminton_level,
+            is_ranking_public: user.is_ranking_public !== false,
         }
     });
 };
@@ -296,6 +299,7 @@ const liffLogin = async (req, res) => {
                 avatarUrl: user.AvatarUrl,
                 is_profile_completed: !!user.is_profile_completed,
                 badminton_level: user.badminton_level,
+                is_ranking_public: user.is_ranking_public !== false,
             }
         });
     } catch (error) {
@@ -496,6 +500,304 @@ const exchangeLoginCode = async (req, res) => {
         user: payload.user
     });
 };
+
+const getRankings = async (req, res) => {
+    const rawType = String(req.query?.type || 'score').toLowerCase();
+    const type = ['score', 'active', 'progress'].includes(rawType) ? rawType : 'score';
+    const publicLimit = 10;
+    const windowDays = Math.min(90, Math.max(7, Number(req.query?.windowDays || 30)));
+    const currentUserId = Number(req.user?.id || 0) || null;
+
+    try {
+        const users = await knex('Users')
+            .select('Id', 'Username', 'AvatarUrl', 'badminton_level', 'verified_matches', 'is_ranking_public');
+
+        if (users.length === 0) {
+            return res.json({
+                success: true,
+                data: {
+                    type,
+                    generatedAt: new Date().toISOString(),
+                    leaderboard: [],
+                    podium: [],
+                    aroundMe: [],
+                    myRank: null,
+                    myVisibility: true,
+                    total: 0,
+                    totalAll: 0,
+                    windowDays,
+                    publicLimit
+                }
+            });
+        }
+
+        const statsByUserId = new Map();
+        for (const user of users) {
+            statsByUserId.set(Number(user.Id), {
+                matches: 0,
+                wins: 0,
+                losses: 0,
+                recentMatches: 0,
+                recentWins: 0,
+                recentLosses: 0,
+                currentWeekMatches: 0,
+                currentWeekWins: 0,
+                currentWeekLosses: 0,
+                prevWeekMatches: 0,
+                prevWeekWins: 0,
+                prevWeekLosses: 0
+            });
+        }
+
+        const playerEntries = await knex('GamePlayers')
+            .where(function () {
+                this.where('IsVirtual', false).orWhereNull('IsVirtual');
+            })
+            .whereNotNull('UserId')
+            .select('Id', 'UserId');
+
+        const entryOwnerMap = new Map();
+        for (const row of playerEntries) {
+            const entryId = Number(row.Id);
+            const userId = Number(row.UserId);
+            if (entryId > 0 && userId > 0) {
+                entryOwnerMap.set(entryId, userId);
+            }
+        }
+
+        const finishedMatches = await knex('Matches')
+            .where({ match_status: 'finished' })
+            .whereIn('winner', ['A', 'B'])
+            .select('winner', 'player_a1', 'player_a2', 'player_b1', 'player_b2', 'end_time');
+
+        const recentCutoff = dayjs().subtract(windowDays, 'day');
+        const currentWeekCutoff = dayjs().subtract(7, 'day');
+        const previousWeekCutoff = dayjs().subtract(14, 'day');
+        const toUserSet = (entryIds) => {
+            const userIds = entryIds
+                .map((entryId) => entryOwnerMap.get(Number(entryId)))
+                .filter((uid) => Number.isInteger(uid) && uid > 0);
+            return [...new Set(userIds)];
+        };
+
+        for (const match of finishedMatches) {
+            const teamA = toUserSet([match.player_a1, match.player_a2].filter(Boolean));
+            const teamB = toUserSet([match.player_b1, match.player_b2].filter(Boolean));
+            const participants = [...new Set([...teamA, ...teamB])];
+            if (participants.length === 0) continue;
+
+            const winners = match.winner === 'A' ? teamA : teamB;
+            const losers = match.winner === 'A' ? teamB : teamA;
+            const endAt = match.end_time ? dayjs(match.end_time) : null;
+            const isRecent = !!endAt && endAt.isAfter(recentCutoff);
+            const isCurrentWeek = !!endAt && endAt.isAfter(currentWeekCutoff);
+            const isPreviousWeek = !!endAt && endAt.isAfter(previousWeekCutoff) && endAt.isBefore(currentWeekCutoff);
+
+            for (const userId of participants) {
+                const stat = statsByUserId.get(userId);
+                if (!stat) continue;
+                stat.matches += 1;
+                if (isRecent) stat.recentMatches += 1;
+                if (isCurrentWeek) stat.currentWeekMatches += 1;
+                if (isPreviousWeek) stat.prevWeekMatches += 1;
+            }
+
+            for (const userId of winners) {
+                const stat = statsByUserId.get(userId);
+                if (!stat) continue;
+                stat.wins += 1;
+                if (isRecent) stat.recentWins += 1;
+                if (isCurrentWeek) stat.currentWeekWins += 1;
+                if (isPreviousWeek) stat.prevWeekWins += 1;
+            }
+
+            for (const userId of losers) {
+                const stat = statsByUserId.get(userId);
+                if (!stat) continue;
+                stat.losses += 1;
+                if (isRecent) stat.recentLosses += 1;
+                if (isCurrentWeek) stat.currentWeekLosses += 1;
+                if (isPreviousWeek) stat.prevWeekLosses += 1;
+            }
+        }
+
+        const rows = users.map((user) => {
+            const userId = Number(user.Id);
+            const stat = statsByUserId.get(userId) || {
+                matches: 0,
+                wins: 0,
+                losses: 0,
+                recentMatches: 0,
+                recentWins: 0,
+                recentLosses: 0,
+                currentWeekMatches: 0,
+                currentWeekWins: 0,
+                currentWeekLosses: 0,
+                prevWeekMatches: 0,
+                prevWeekWins: 0,
+                prevWeekLosses: 0
+            };
+
+            const matches = Number(stat.matches || 0);
+            const wins = Number(stat.wins || 0);
+            const losses = Number(stat.losses || 0);
+            const recentMatches = Number(stat.recentMatches || 0);
+            const recentWins = Number(stat.recentWins || 0);
+            const recentLosses = Number(stat.recentLosses || 0);
+            const currentWeekMatches = Number(stat.currentWeekMatches || 0);
+            const currentWeekWins = Number(stat.currentWeekWins || 0);
+            const currentWeekLosses = Number(stat.currentWeekLosses || 0);
+            const prevWeekMatches = Number(stat.prevWeekMatches || 0);
+            const prevWeekWins = Number(stat.prevWeekWins || 0);
+            const prevWeekLosses = Number(stat.prevWeekLosses || 0);
+            const level = Number(user.badminton_level || 1);
+            const verifiedMatches = Number(user.verified_matches || 0);
+            const winRate = matches > 0 ? Number(((wins / matches) * 100).toFixed(1)) : 0;
+            const recentWinRate = recentMatches > 0 ? Number(((recentWins / recentMatches) * 100).toFixed(1)) : 0;
+            const currentWeekWinRate = currentWeekMatches > 0 ? Number(((currentWeekWins / currentWeekMatches) * 100).toFixed(1)) : 0;
+            const prevWeekWinRate = prevWeekMatches > 0 ? Number(((prevWeekWins / prevWeekMatches) * 100).toFixed(1)) : 0;
+            const score = Math.round(level * 100 + wins * 8 + verifiedMatches * 3 + recentMatches * 4 - losses * 2);
+            const activityScore = recentMatches * 12 + recentWins * 4 + Math.round(level * 2);
+            const currentWeekScore = currentWeekWins * 12 + currentWeekMatches * 3 - currentWeekLosses * 4;
+            const previousWeekScore = prevWeekWins * 12 + prevWeekMatches * 3 - prevWeekLosses * 4;
+            const progressScore = currentWeekScore - previousWeekScore;
+            const progressWinRateDelta = Number((currentWeekWinRate - prevWeekWinRate).toFixed(1));
+
+            return {
+                userId,
+                username: user.Username || `Player #${userId}`,
+                avatarUrl: buildAvatarAssetUrl(req, userId, user.AvatarUrl),
+                isRankingPublic: user.is_ranking_public !== false,
+                level: Number(level.toFixed(2)),
+                verifiedMatches,
+                matches,
+                wins,
+                losses,
+                winRate,
+                recentMatches,
+                recentWins,
+                recentLosses,
+                recentWinRate,
+                currentWeekMatches,
+                currentWeekWins,
+                currentWeekLosses,
+                prevWeekMatches,
+                prevWeekWins,
+                prevWeekLosses,
+                currentWeekWinRate,
+                prevWeekWinRate,
+                score,
+                activityScore,
+                progressScore,
+                progressWinRateDelta,
+                trend: recentWins - recentLosses
+            };
+        });
+
+        let filtered = rows;
+        if (type === 'score') {
+            filtered = rows.filter((row) => row.matches > 0 || row.verifiedMatches > 0);
+        } else if (type === 'active') {
+            filtered = rows.filter((row) => row.recentMatches > 0 || row.matches > 0);
+        } else if (type === 'progress') {
+            filtered = rows.filter((row) => row.currentWeekMatches > 0 || row.prevWeekMatches > 0);
+        }
+
+        if (filtered.length === 0) {
+            filtered = rows;
+        }
+
+        const sorted = [...filtered].sort((a, b) => {
+            if (type === 'score') {
+                return (
+                    b.score - a.score ||
+                    b.winRate - a.winRate ||
+                    b.matches - a.matches ||
+                    a.username.localeCompare(b.username)
+                );
+            }
+            if (type === 'active') {
+                return (
+                    b.activityScore - a.activityScore ||
+                    b.recentMatches - a.recentMatches ||
+                    b.recentWinRate - a.recentWinRate ||
+                    b.level - a.level ||
+                    a.username.localeCompare(b.username)
+                );
+            }
+            return (
+                b.progressScore - a.progressScore ||
+                b.currentWeekWins - a.currentWeekWins ||
+                b.currentWeekMatches - a.currentWeekMatches ||
+                b.progressWinRateDelta - a.progressWinRateDelta ||
+                a.username.localeCompare(b.username)
+            );
+        });
+
+        const rankedAll = sorted.map((row, index) => ({ ...row, rank: index + 1 }));
+        const myRank = currentUserId ? rankedAll.find((row) => row.userId === currentUserId) || null : null;
+        const myVisibility = myRank ? !!myRank.isRankingPublic : true;
+        const maskRowForViewer = (row) => {
+            const isSelf = !!currentUserId && Number(row.userId) === Number(currentUserId);
+            const canViewDetail = isSelf || row.isRankingPublic;
+            if (canViewDetail) return { ...row, masked: false };
+
+            return {
+                ...row,
+                masked: true,
+                matches: null,
+                wins: null,
+                losses: null,
+                winRate: null,
+                recentMatches: null,
+                recentWins: null,
+                recentLosses: null,
+                recentWinRate: null,
+                currentWeekMatches: null,
+                currentWeekWins: null,
+                currentWeekLosses: null,
+                prevWeekMatches: null,
+                prevWeekWins: null,
+                prevWeekLosses: null,
+                currentWeekWinRate: null,
+                prevWeekWinRate: null,
+                score: null,
+                activityScore: null,
+                progressScore: null,
+                progressWinRateDelta: null,
+                trend: null,
+            };
+        };
+
+        const leaderboard = rankedAll.slice(0, publicLimit).map(maskRowForViewer);
+        const podium = rankedAll.slice(0, 3).map(maskRowForViewer);
+
+        const aroundMe = myRank
+            ? rankedAll
+                .slice(Math.max(0, myRank.rank - 3), Math.min(rankedAll.length, myRank.rank + 2))
+                .map(maskRowForViewer)
+            : [];
+
+        return res.json({
+            success: true,
+            data: {
+                type,
+                generatedAt: new Date().toISOString(),
+                leaderboard,
+                podium,
+                aroundMe,
+                myRank,
+                myVisibility,
+                total: rankedAll.length,
+                totalAll: rankedAll.length,
+                windowDays,
+                publicLimit
+            }
+        });
+    } catch (error) {
+        return res.status(500).json({ success: false, message: 'Failed to get rankings' });
+    }
+};
 const rating = async (req, res) => {
     const { years, level } = req.body;
     const userId = req.user.id;
@@ -549,10 +851,36 @@ const getMe = async (req, res) => {
                 is_profile_completed: !!user.is_profile_completed,
                 badminton_level: user.badminton_level,
                 verified_matches: user.verified_matches,
+                is_ranking_public: user.is_ranking_public !== false,
             }
         });
     } catch (error) {
         res.status(500).json({ success: false });
+    }
+};
+
+const updateRankingVisibility = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { isPublic } = req.body || {};
+        if (typeof isPublic !== 'boolean') {
+            return res.status(400).json({ success: false, message: 'isPublic must be boolean' });
+        }
+
+        await knex('Users')
+            .where({ Id: userId })
+            .update({ is_ranking_public: isPublic });
+
+        return res.json({
+            success: true,
+            message: isPublic ? '已開啟詳細數據公開' : '已隱藏詳細數據（名次仍公開）',
+            user: {
+                id: userId,
+                is_ranking_public: isPublic
+            }
+        });
+    } catch (error) {
+        return res.status(500).json({ success: false, message: 'Failed to update ranking visibility' });
     }
 };
 
@@ -721,6 +1049,7 @@ const updateAvatar = async (req, res) => {
                 is_profile_completed: !!user.is_profile_completed,
                 badminton_level: user.badminton_level,
                 verified_matches: user.verified_matches,
+                is_ranking_public: user.is_ranking_public !== false,
             }
         });
     } catch (error) {
@@ -744,7 +1073,7 @@ module.exports = {
     getGoogleAuthUrl,
     facebookCallback,
     getFacebookAuthUrl,
-    exchangeLoginCode
+    exchangeLoginCode,
+    getRankings,
+    updateRankingVisibility
 };
-
-

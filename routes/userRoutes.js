@@ -15,7 +15,9 @@ const {
   getGoogleAuthUrl,
   facebookCallback,
   getFacebookAuthUrl,
-  exchangeLoginCode
+  exchangeLoginCode,
+  getRankings,
+  updateRankingVisibility
 } = require('../controllers/user')
 const verifyToken = require('../middlewares/auth');
 
@@ -33,6 +35,8 @@ router.get('/facebook/callback', facebookCallback);
 router.post('/liff-login', liffLogin);
 router.post('/complete-rating', verifyToken, rating);
 router.get('/me', verifyToken, getMe);
+router.get('/rankings', verifyToken, getRankings);
+router.patch('/ranking-visibility', verifyToken, updateRankingVisibility);
 router.get('/public/:id', verifyToken, getPublicProfile);
 router.get('/avatar/:id', getAvatarById);
 router.post('/avatar', verifyToken, updateAvatar);

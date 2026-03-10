@@ -16,7 +16,7 @@ const { initWebSocket } = require('./wsServer');
 
 app.use(cors({
     origin: ['http://localhost:3001', process.env.FRONTEND_URL],
-    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     credentials: true
 }));
 app.use(express.json({ limit: '2mb' }));
