@@ -507,6 +507,16 @@ const getRankings = async (req, res) => {
     const publicLimit = 10;
     const windowDays = Math.min(90, Math.max(7, Number(req.query?.windowDays || 30)));
     const currentUserId = Number(req.user?.id || 0) || null;
+    const NEWBIE_VERIFIED_THRESHOLD = 10;
+    const NEWBIE_LEVEL_MAX = 4;
+    const MENTOR_LEVEL_GAP = 2;
+    const MENTOR_UPSET_BONUS = 12;
+    const MENTOR_NORMAL_BONUS = 6;
+    const MENTOR_FARM_BONUS = 1;
+    const MENTOR_LOSS_SHIELD = 2;
+    const MENTOR_UPSET_THRESHOLD = 1;
+    const MENTOR_LOSS_SHIELD_MARGIN = 0.5;
+    const MENTOR_DAILY_CAP = 20;
 
     try {
         const users = await knex('Users')
@@ -532,8 +542,13 @@ const getRankings = async (req, res) => {
         }
 
         const statsByUserId = new Map();
+        const userMetaById = new Map();
+        const mentorBonusByUserId = new Map();
         for (const user of users) {
-            statsByUserId.set(Number(user.Id), {
+            const userId = Number(user.Id);
+            const level = Number(user.badminton_level || 1);
+            const verifiedMatches = Number(user.verified_matches || 0);
+            statsByUserId.set(userId, {
                 matches: 0,
                 wins: 0,
                 losses: 0,
@@ -547,6 +562,8 @@ const getRankings = async (req, res) => {
                 prevWeekWins: 0,
                 prevWeekLosses: 0
             });
+            userMetaById.set(userId, { level, verifiedMatches });
+            mentorBonusByUserId.set(userId, 0);
         }
 
         const playerEntries = await knex('GamePlayers')
@@ -573,6 +590,52 @@ const getRankings = async (req, res) => {
         const recentCutoff = dayjs().subtract(windowDays, 'day');
         const currentWeekCutoff = dayjs().subtract(7, 'day');
         const previousWeekCutoff = dayjs().subtract(14, 'day');
+        const mentorDailyUsed = new Map();
+        const mentorPairDailyCount = new Map();
+        const toTeamAvgLevel = (teamIds) => {
+            if (!Array.isArray(teamIds) || teamIds.length === 0) return 0;
+            const sum = teamIds.reduce((acc, uid) => acc + Number(userMetaById.get(uid)?.level || 1), 0);
+            return sum / teamIds.length;
+        };
+        const isNewbie = (meta) => {
+            if (!meta) return false;
+            return Number(meta.verifiedMatches || 0) < NEWBIE_VERIFIED_THRESHOLD || Number(meta.level || 1) <= NEWBIE_LEVEL_MAX;
+        };
+        const getMentorPair = (teamIds) => {
+            if (!Array.isArray(teamIds) || teamIds.length !== 2) return null;
+            const [u1, u2] = teamIds;
+            const m1 = userMetaById.get(u1);
+            const m2 = userMetaById.get(u2);
+            if (!m1 || !m2) return null;
+
+            if ((Number(m1.level) - Number(m2.level) >= MENTOR_LEVEL_GAP) && isNewbie(m2)) {
+                return { mentorId: u1, newbieId: u2 };
+            }
+            if ((Number(m2.level) - Number(m1.level) >= MENTOR_LEVEL_GAP) && isNewbie(m1)) {
+                return { mentorId: u2, newbieId: u1 };
+            }
+            return null;
+        };
+        const applyMentorBonus = ({ mentorId, newbieId, dayKey, baseBonus }) => {
+            if (!mentorId || !newbieId || !dayKey || !baseBonus || baseBonus <= 0) return;
+            const dailyKey = `${dayKey}|${mentorId}`;
+            const usedToday = Number(mentorDailyUsed.get(dailyKey) || 0);
+            if (usedToday >= MENTOR_DAILY_CAP) return;
+
+            const pairKey = `${dayKey}|${mentorId}|${newbieId}`;
+            const pairCount = Number(mentorPairDailyCount.get(pairKey) || 0);
+            const decay = pairCount === 0 ? 1 : (pairCount === 1 ? 0.5 : 0.2);
+            let awarded = Number((baseBonus * decay).toFixed(2));
+            if (awarded <= 0) return;
+
+            const remain = Number((MENTOR_DAILY_CAP - usedToday).toFixed(2));
+            if (awarded > remain) awarded = remain;
+            if (awarded <= 0) return;
+
+            mentorDailyUsed.set(dailyKey, Number((usedToday + awarded).toFixed(2)));
+            mentorPairDailyCount.set(pairKey, pairCount + 1);
+            mentorBonusByUserId.set(mentorId, Number(((mentorBonusByUserId.get(mentorId) || 0) + awarded).toFixed(2)));
+        };
         const toUserSet = (entryIds) => {
             const userIds = entryIds
                 .map((entryId) => entryOwnerMap.get(Number(entryId)))
@@ -619,6 +682,46 @@ const getRankings = async (req, res) => {
                 if (isCurrentWeek) stat.currentWeekLosses += 1;
                 if (isPreviousWeek) stat.prevWeekLosses += 1;
             }
+
+            if (isRecent && endAt) {
+                const avgA = toTeamAvgLevel(teamA);
+                const avgB = toTeamAvgLevel(teamB);
+                const mentorA = getMentorPair(teamA);
+                const mentorB = getMentorPair(teamB);
+                const dayKey = endAt.format('YYYY-MM-DD');
+
+                if (match.winner === 'A' && mentorA) {
+                    const bonus = avgB >= (avgA + MENTOR_UPSET_THRESHOLD)
+                        ? MENTOR_UPSET_BONUS
+                        : (avgA >= (avgB + MENTOR_UPSET_THRESHOLD) ? MENTOR_FARM_BONUS : MENTOR_NORMAL_BONUS);
+                    applyMentorBonus({ mentorId: mentorA.mentorId, newbieId: mentorA.newbieId, dayKey, baseBonus: bonus });
+                }
+
+                if (match.winner === 'B' && mentorB) {
+                    const bonus = avgA >= (avgB + MENTOR_UPSET_THRESHOLD)
+                        ? MENTOR_UPSET_BONUS
+                        : (avgB >= (avgA + MENTOR_UPSET_THRESHOLD) ? MENTOR_FARM_BONUS : MENTOR_NORMAL_BONUS);
+                    applyMentorBonus({ mentorId: mentorB.mentorId, newbieId: mentorB.newbieId, dayKey, baseBonus: bonus });
+                }
+
+                if (match.winner === 'A' && mentorB && avgA >= (avgB - MENTOR_LOSS_SHIELD_MARGIN)) {
+                    applyMentorBonus({
+                        mentorId: mentorB.mentorId,
+                        newbieId: mentorB.newbieId,
+                        dayKey,
+                        baseBonus: MENTOR_LOSS_SHIELD
+                    });
+                }
+
+                if (match.winner === 'B' && mentorA && avgB >= (avgA - MENTOR_LOSS_SHIELD_MARGIN)) {
+                    applyMentorBonus({
+                        mentorId: mentorA.mentorId,
+                        newbieId: mentorA.newbieId,
+                        dayKey,
+                        baseBonus: MENTOR_LOSS_SHIELD
+                    });
+                }
+            }
         }
 
         const rows = users.map((user) => {
@@ -652,11 +755,12 @@ const getRankings = async (req, res) => {
             const prevWeekLosses = Number(stat.prevWeekLosses || 0);
             const level = Number(user.badminton_level || 1);
             const verifiedMatches = Number(user.verified_matches || 0);
+            const mentorBonus = Number(mentorBonusByUserId.get(userId) || 0);
             const winRate = matches > 0 ? Number(((wins / matches) * 100).toFixed(1)) : 0;
             const recentWinRate = recentMatches > 0 ? Number(((recentWins / recentMatches) * 100).toFixed(1)) : 0;
             const currentWeekWinRate = currentWeekMatches > 0 ? Number(((currentWeekWins / currentWeekMatches) * 100).toFixed(1)) : 0;
             const prevWeekWinRate = prevWeekMatches > 0 ? Number(((prevWeekWins / prevWeekMatches) * 100).toFixed(1)) : 0;
-            const score = Math.round(level * 100 + wins * 8 + verifiedMatches * 3 + recentMatches * 4 - losses * 2);
+            const score = Math.round(level * 100 + wins * 8 + verifiedMatches * 3 + recentMatches * 4 + mentorBonus - losses * 2);
             const activityScore = recentMatches * 12 + recentWins * 4 + Math.round(level * 2);
             const currentWeekScore = currentWeekWins * 12 + currentWeekMatches * 3 - currentWeekLosses * 4;
             const previousWeekScore = prevWeekWins * 12 + prevWeekMatches * 3 - prevWeekLosses * 4;
@@ -687,6 +791,7 @@ const getRankings = async (req, res) => {
                 currentWeekWinRate,
                 prevWeekWinRate,
                 score,
+                mentorBonus,
                 activityScore,
                 progressScore,
                 progressWinRateDelta,
@@ -762,6 +867,7 @@ const getRankings = async (req, res) => {
                 currentWeekWinRate: null,
                 prevWeekWinRate: null,
                 score: null,
+                mentorBonus: null,
                 activityScore: null,
                 progressScore: null,
                 progressWinRateDelta: null,
