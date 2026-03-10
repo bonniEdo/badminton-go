@@ -795,7 +795,9 @@ const getRankings = async (req, res) => {
                 activityScore,
                 progressScore,
                 progressWinRateDelta,
-                trend: recentWins - recentLosses
+                trend: recentWins - recentLosses,
+                currentWeekScore,
+                previousWeekScore
             };
         });
 
@@ -811,6 +813,25 @@ const getRankings = async (req, res) => {
         if (filtered.length === 0) {
             filtered = rows;
         }
+
+        const currentWeekRankMap = new Map();
+        const previousWeekRankMap = new Map();
+
+        const currentWeekSorted = [...filtered].sort((a, b) => (
+            b.currentWeekScore - a.currentWeekScore ||
+            b.currentWeekWins - a.currentWeekWins ||
+            b.currentWeekMatches - a.currentWeekMatches ||
+            a.username.localeCompare(b.username)
+        ));
+        const previousWeekSorted = [...filtered].sort((a, b) => (
+            b.previousWeekScore - a.previousWeekScore ||
+            b.prevWeekWins - a.prevWeekWins ||
+            b.prevWeekMatches - a.prevWeekMatches ||
+            a.username.localeCompare(b.username)
+        ));
+
+        currentWeekSorted.forEach((row, index) => currentWeekRankMap.set(row.userId, index + 1));
+        previousWeekSorted.forEach((row, index) => previousWeekRankMap.set(row.userId, index + 1));
 
         const sorted = [...filtered].sort((a, b) => {
             if (type === 'score') {
@@ -839,7 +860,20 @@ const getRankings = async (req, res) => {
             );
         });
 
-        const rankedAll = sorted.map((row, index) => ({ ...row, rank: index + 1 }));
+        const rankedAll = sorted.map((row, index) => {
+            const currentWeekRank = currentWeekRankMap.get(row.userId) ?? null;
+            const previousWeekRank = previousWeekRankMap.get(row.userId) ?? null;
+            const weeklyRankDelta = (
+                currentWeekRank === null || previousWeekRank === null
+                    ? null
+                    : previousWeekRank - currentWeekRank
+            );
+            return {
+                ...row,
+                rank: index + 1,
+                weeklyRankDelta
+            };
+        });
         const myRank = currentUserId ? rankedAll.find((row) => row.userId === currentUserId) || null : null;
         const myVisibility = myRank ? !!myRank.isRankingPublic : true;
         const maskRowForViewer = (row) => {
@@ -872,6 +906,9 @@ const getRankings = async (req, res) => {
                 progressScore: null,
                 progressWinRateDelta: null,
                 trend: null,
+                currentWeekScore: null,
+                previousWeekScore: null,
+                weeklyRankDelta: null,
             };
         };
 
