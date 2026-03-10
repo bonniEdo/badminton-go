@@ -23,16 +23,16 @@ const normalizeOrigin = (urlValue, label) => {
     }
 };
 
-const normalizeBaseUrl = (urlValue, label) => {
+const normalizeAbsoluteUrl = (urlValue, label) => {
     try {
         const parsed = new URL(urlValue);
-        return parsed.origin;
+        return parsed.toString();
     } catch (_) {
         throw new AppError(`${label} must be a valid absolute URL`, 500);
     }
 };
 
-const getValidatedEnvUrl = (envKey, allowlistKey) => {
+const validateEnvUrlAgainstAllowlist = (envKey, allowlistKey) => {
     const envValue = String(process.env[envKey] || '').trim();
     if (!envValue) {
         throw new AppError(`${envKey} is not configured`, 500);
@@ -49,13 +49,25 @@ const getValidatedEnvUrl = (envKey, allowlistKey) => {
         throw new AppError(`${envKey} origin is not allowed`, 500);
     }
 
-    return normalizeBaseUrl(envValue, envKey);
+    return envValue;
 };
 
-const getFrontendBaseUrl = () => getValidatedEnvUrl('FRONTEND_URL', 'OAUTH_FRONTEND_URL_ALLOWLIST');
-const getLineCallbackUrl = () => getValidatedEnvUrl('LINE_CALLBACK_URL', 'OAUTH_CALLBACK_URL_ALLOWLIST');
-const getGoogleCallbackUrl = () => getValidatedEnvUrl('GOOGLE_CALLBACK_URL', 'OAUTH_CALLBACK_URL_ALLOWLIST');
-const getFacebookCallbackUrl = () => getValidatedEnvUrl('FACEBOOK_CALLBACK_URL', 'OAUTH_CALLBACK_URL_ALLOWLIST');
+const getFrontendBaseUrl = () => normalizeOrigin(
+    validateEnvUrlAgainstAllowlist('FRONTEND_URL', 'OAUTH_FRONTEND_URL_ALLOWLIST'),
+    'FRONTEND_URL'
+);
+const getLineCallbackUrl = () => normalizeAbsoluteUrl(
+    validateEnvUrlAgainstAllowlist('LINE_CALLBACK_URL', 'OAUTH_CALLBACK_URL_ALLOWLIST'),
+    'LINE_CALLBACK_URL'
+);
+const getGoogleCallbackUrl = () => normalizeAbsoluteUrl(
+    validateEnvUrlAgainstAllowlist('GOOGLE_CALLBACK_URL', 'OAUTH_CALLBACK_URL_ALLOWLIST'),
+    'GOOGLE_CALLBACK_URL'
+);
+const getFacebookCallbackUrl = () => normalizeAbsoluteUrl(
+    validateEnvUrlAgainstAllowlist('FACEBOOK_CALLBACK_URL', 'OAUTH_CALLBACK_URL_ALLOWLIST'),
+    'FACEBOOK_CALLBACK_URL'
+);
 
 const redirectToFrontend = (res, pathWithQuery) => {
     try {
@@ -734,6 +746,5 @@ module.exports = {
     getFacebookAuthUrl,
     exchangeLoginCode
 };
-
 
 
