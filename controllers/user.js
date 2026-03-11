@@ -135,8 +135,17 @@ const buildRankingVisibilityMap = (users) => {
 };
 
 const normalizeRankedRows = (rows) => {
-    if (!Array.isArray(rows)) return [];
-    return rows
+    let sourceRows = rows;
+    if (typeof sourceRows === 'string') {
+        try {
+            sourceRows = JSON.parse(sourceRows);
+        } catch (_) {
+            sourceRows = [];
+        }
+    }
+    if (!Array.isArray(sourceRows)) return [];
+
+    return sourceRows
         .filter((row) => row && Number.isInteger(Number(row.userId)) && Number(row.userId) > 0)
         .map((row) => ({
             ...row,
@@ -1040,6 +1049,7 @@ const getRankings = async (req, res) => {
         });
 
         try {
+            const rankedAllJson = JSON.stringify(rankedAll);
             await knex('RankingSnapshots')
                 .insert({
                     snapshot_date: snapshotDate,
@@ -1047,12 +1057,12 @@ const getRankings = async (req, res) => {
                     window_days: windowDays,
                     public_limit: publicLimit,
                     generated_at: generatedAt,
-                    ranked_all: rankedAll
+                    ranked_all: rankedAllJson
                 })
                 .onConflict(['snapshot_date', 'type', 'window_days', 'public_limit'])
                 .merge({
                     generated_at: generatedAt,
-                    ranked_all: rankedAll,
+                    ranked_all: rankedAllJson,
                     updated_at: knex.fn.now()
                 });
         } catch (snapshotWriteError) {
