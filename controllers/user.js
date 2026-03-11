@@ -107,6 +107,126 @@ const buildAvatarAssetUrl = (req, userId, avatarUrl) => {
     return `${origin}/api/user/avatar/${userId}`;
 };
 
+const RANKING_SNAPSHOT_TZ = process.env.RANKING_SNAPSHOT_TZ || 'Asia/Taipei';
+
+const getRankingSnapshotDateKey = (date = new Date()) => {
+    const formatter = new Intl.DateTimeFormat('en-US', {
+        timeZone: RANKING_SNAPSHOT_TZ,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+    });
+    const parts = formatter.formatToParts(date);
+    const year = parts.find((part) => part.type === 'year')?.value;
+    const month = parts.find((part) => part.type === 'month')?.value;
+    const day = parts.find((part) => part.type === 'day')?.value;
+    if (!year || !month || !day) return dayjs(date).format('YYYY-MM-DD');
+    return `${year}-${month}-${day}`;
+};
+
+const buildRankingVisibilityMap = (users) => {
+    const map = new Map();
+    for (const user of users || []) {
+        const userId = Number(user?.Id);
+        if (!Number.isInteger(userId) || userId <= 0) continue;
+        map.set(userId, user?.is_ranking_public !== false);
+    }
+    return map;
+};
+
+const normalizeRankedRows = (rows) => {
+    if (!Array.isArray(rows)) return [];
+    return rows
+        .filter((row) => row && Number.isInteger(Number(row.userId)) && Number(row.userId) > 0)
+        .map((row) => ({
+            ...row,
+            userId: Number(row.userId),
+            rank: Number(row.rank || 0),
+            isRankingPublic: row?.isRankingPublic !== false
+        }))
+        .sort((a, b) => Number(a.rank || 0) - Number(b.rank || 0));
+};
+
+const buildRankingPayloadForViewer = ({
+    rankedAll,
+    currentUserId,
+    type,
+    generatedAt,
+    windowDays,
+    publicLimit,
+    visibilityByUserId
+}) => {
+    const safeRows = normalizeRankedRows(rankedAll);
+    const resolveIsPublic = (row) => {
+        const fromMap = visibilityByUserId?.get(Number(row.userId));
+        if (typeof fromMap === 'boolean') return fromMap;
+        return row?.isRankingPublic !== false;
+    };
+
+    const myRankRaw = currentUserId
+        ? safeRows.find((row) => Number(row.userId) === Number(currentUserId)) || null
+        : null;
+    const myVisibility = myRankRaw ? resolveIsPublic(myRankRaw) : true;
+
+    const maskRowForViewer = (row) => {
+        const isSelf = !!currentUserId && Number(row.userId) === Number(currentUserId);
+        const canViewDetail = isSelf || resolveIsPublic(row);
+        if (canViewDetail) return { ...row, masked: false };
+
+        return {
+            ...row,
+            masked: true,
+            matches: null,
+            wins: null,
+            losses: null,
+            winRate: null,
+            recentMatches: null,
+            recentWins: null,
+            recentLosses: null,
+            recentWinRate: null,
+            currentWeekMatches: null,
+            currentWeekWins: null,
+            currentWeekLosses: null,
+            prevWeekMatches: null,
+            prevWeekWins: null,
+            prevWeekLosses: null,
+            currentWeekWinRate: null,
+            prevWeekWinRate: null,
+            score: null,
+            mentorBonus: null,
+            activityScore: null,
+            progressScore: null,
+            progressWinRateDelta: null,
+            trend: null,
+            currentWeekScore: null,
+            previousWeekScore: null,
+            weeklyRankDelta: null,
+        };
+    };
+
+    const leaderboard = safeRows.slice(0, publicLimit).map(maskRowForViewer);
+    const podium = safeRows.slice(0, 3).map(maskRowForViewer);
+    const aroundMe = myRankRaw
+        ? safeRows
+            .slice(Math.max(0, Number(myRankRaw.rank) - 3), Math.min(safeRows.length, Number(myRankRaw.rank) + 2))
+            .map(maskRowForViewer)
+        : [];
+
+    return {
+        type,
+        generatedAt,
+        leaderboard,
+        podium,
+        aroundMe,
+        myRank: myRankRaw ? maskRowForViewer(myRankRaw) : null,
+        myVisibility,
+        total: safeRows.length,
+        totalAll: safeRows.length,
+        windowDays,
+        publicLimit
+    };
+};
+
 const createUser = async (req, res) => {
     const { username, email, password } = req.body;
     if (!username) throw new AppError('Username is required', 400);
@@ -517,27 +637,61 @@ const getRankings = async (req, res) => {
     const MENTOR_UPSET_THRESHOLD = 1;
     const MENTOR_LOSS_SHIELD_MARGIN = 0.5;
     const MENTOR_DAILY_CAP = 20;
+    const snapshotDate = getRankingSnapshotDateKey();
 
     try {
+        let cachedSnapshot = null;
+        try {
+            cachedSnapshot = await knex('RankingSnapshots')
+                .where({
+                    snapshot_date: snapshotDate,
+                    type,
+                    window_days: windowDays,
+                    public_limit: publicLimit
+                })
+                .first();
+        } catch (snapshotReadError) {
+            // 42P01: table does not exist yet (migration not run). Fall back to live compute.
+            if (snapshotReadError?.code !== '42P01') {
+                console.error('Read ranking snapshot failed:', snapshotReadError.message);
+            }
+        }
+
+        if (cachedSnapshot?.ranked_all) {
+            const visibilityUsers = await knex('Users').select('Id', 'is_ranking_public');
+            const visibilityByUserId = buildRankingVisibilityMap(visibilityUsers);
+            const cachedAt = dayjs(cachedSnapshot.generated_at);
+            const generatedAt = cachedAt.isValid() ? cachedAt.toISOString() : new Date().toISOString();
+            return res.json({
+                success: true,
+                data: buildRankingPayloadForViewer({
+                    rankedAll: cachedSnapshot.ranked_all,
+                    currentUserId,
+                    type,
+                    generatedAt,
+                    windowDays,
+                    publicLimit,
+                    visibilityByUserId
+                })
+            });
+        }
+
         const users = await knex('Users')
             .select('Id', 'Username', 'AvatarUrl', 'badminton_level', 'verified_matches', 'is_ranking_public');
+        const visibilityByUserId = buildRankingVisibilityMap(users);
 
         if (users.length === 0) {
             return res.json({
                 success: true,
-                data: {
+                data: buildRankingPayloadForViewer({
+                    rankedAll: [],
+                    currentUserId,
                     type,
                     generatedAt: new Date().toISOString(),
-                    leaderboard: [],
-                    podium: [],
-                    aroundMe: [],
-                    myRank: null,
-                    myVisibility: true,
-                    total: 0,
-                    totalAll: 0,
                     windowDays,
-                    publicLimit
-                }
+                    publicLimit,
+                    visibilityByUserId
+                })
             });
         }
 
@@ -874,68 +1028,43 @@ const getRankings = async (req, res) => {
                 weeklyRankDelta
             };
         });
-        const myRank = currentUserId ? rankedAll.find((row) => row.userId === currentUserId) || null : null;
-        const myVisibility = myRank ? !!myRank.isRankingPublic : true;
-        const maskRowForViewer = (row) => {
-            const isSelf = !!currentUserId && Number(row.userId) === Number(currentUserId);
-            const canViewDetail = isSelf || row.isRankingPublic;
-            if (canViewDetail) return { ...row, masked: false };
+        const generatedAt = new Date().toISOString();
+        const payloadData = buildRankingPayloadForViewer({
+            rankedAll,
+            currentUserId,
+            type,
+            generatedAt,
+            windowDays,
+            publicLimit,
+            visibilityByUserId
+        });
 
-            return {
-                ...row,
-                masked: true,
-                matches: null,
-                wins: null,
-                losses: null,
-                winRate: null,
-                recentMatches: null,
-                recentWins: null,
-                recentLosses: null,
-                recentWinRate: null,
-                currentWeekMatches: null,
-                currentWeekWins: null,
-                currentWeekLosses: null,
-                prevWeekMatches: null,
-                prevWeekWins: null,
-                prevWeekLosses: null,
-                currentWeekWinRate: null,
-                prevWeekWinRate: null,
-                score: null,
-                mentorBonus: null,
-                activityScore: null,
-                progressScore: null,
-                progressWinRateDelta: null,
-                trend: null,
-                currentWeekScore: null,
-                previousWeekScore: null,
-                weeklyRankDelta: null,
-            };
-        };
-
-        const leaderboard = rankedAll.slice(0, publicLimit).map(maskRowForViewer);
-        const podium = rankedAll.slice(0, 3).map(maskRowForViewer);
-
-        const aroundMe = myRank
-            ? rankedAll
-                .slice(Math.max(0, myRank.rank - 3), Math.min(rankedAll.length, myRank.rank + 2))
-                .map(maskRowForViewer)
-            : [];
+        try {
+            await knex('RankingSnapshots')
+                .insert({
+                    snapshot_date: snapshotDate,
+                    type,
+                    window_days: windowDays,
+                    public_limit: publicLimit,
+                    generated_at: generatedAt,
+                    ranked_all: rankedAll
+                })
+                .onConflict(['snapshot_date', 'type', 'window_days', 'public_limit'])
+                .merge({
+                    generated_at: generatedAt,
+                    ranked_all: rankedAll,
+                    updated_at: knex.fn.now()
+                });
+        } catch (snapshotWriteError) {
+            // 42P01: table does not exist yet (migration not run). Keep API response available.
+            if (snapshotWriteError?.code !== '42P01') {
+                console.error('Write ranking snapshot failed:', snapshotWriteError.message);
+            }
+        }
 
         return res.json({
             success: true,
-            data: {
-                type,
-                generatedAt: new Date().toISOString(),
-                leaderboard,
-                podium,
-                aroundMe,
-                myRank,
-                myVisibility,
-                total: rankedAll.length,
-                totalAll: rankedAll.length,
-                windowDays,
-                publicLimit
-            }
+            data: payloadData
         });
     } catch (error) {
         return res.status(500).json({ success: false, message: 'Failed to get rankings' });
