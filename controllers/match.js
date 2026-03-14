@@ -27,6 +27,47 @@ const pairKey = (id1, id2) => {
     return a < b ? `${a}-${b}` : `${b}-${a}`;
 };
 
+const PAIRING_MODES = ['open_doubles', 'men_doubles', 'women_doubles', 'mixed_doubles'];
+const normalizePairingMode = (rawMode) => {
+    const normalized = String(rawMode || '').trim().toLowerCase();
+    return PAIRING_MODES.includes(normalized) ? normalized : 'open_doubles';
+};
+
+const normalizePairingGender = (rawGender) => {
+    const normalized = String(rawGender || '').trim().toLowerCase();
+    if (normalized === 'male' || normalized === 'female') return normalized;
+    return 'undisclosed';
+};
+
+const validatePairingModeForPlayers = (mode, playerRows) => {
+    if (mode === 'open_doubles') return null;
+    if (!Array.isArray(playerRows) || playerRows.length !== 4) {
+        return 'Pairing mode requires exactly 4 players';
+    }
+
+    const getGender = (row) => normalizePairingGender(row?.PairingGender);
+    const allGenders = playerRows.map(getGender);
+
+    if (mode === 'men_doubles') {
+        return allGenders.every((g) => g === 'male') ? null : 'Men doubles requires all players to be male';
+    }
+
+    if (mode === 'women_doubles') {
+        return allGenders.every((g) => g === 'female') ? null : 'Women doubles requires all players to be female';
+    }
+
+    if (mode === 'mixed_doubles') {
+        const teamA = [getGender(playerRows[0]), getGender(playerRows[1])];
+        const teamB = [getGender(playerRows[2]), getGender(playerRows[3])];
+        const validTeam = (team) => team.includes('male') && team.includes('female');
+        if (!validTeam(teamA) || !validTeam(teamB)) {
+            return 'Mixed doubles requires one male and one female on each side';
+        }
+    }
+
+    return null;
+};
+
 const getPairingAssistData = async (gameId, recentWindow = 5) => {
     const finishedMatches = await knex('Matches')
         .where({ game_id: gameId, match_status: 'finished' })
@@ -177,6 +218,7 @@ const checkin = async (req, res) => {
 
 const startMatch = async (req, res) => {
     const { gameId, courtNumber, players } = req.body;
+    const pairingMode = normalizePairingMode(req.body?.pairingMode);
     const hostUserId = req.user?.id || req.user?.UserId;
 
     try {
@@ -191,6 +233,52 @@ const startMatch = async (req, res) => {
                 .first();
             if (existingMatch) throw new Error(`Court ${courtNumber} already has an active match`);
 
+            const orderedPlayerIds = [
+                Number(players?.a1 || 0),
+                Number(players?.a2 || 0),
+                Number(players?.b1 || 0),
+                Number(players?.b2 || 0)
+            ];
+            if (orderedPlayerIds.some((id) => !Number.isInteger(id) || id <= 0)) {
+                throw new Error('Match requires exactly 4 valid players');
+            }
+
+            const uniquePlayerIds = [...new Set(orderedPlayerIds)];
+            if (uniquePlayerIds.length !== orderedPlayerIds.length) {
+                throw new Error('Match players contain duplicates');
+            }
+
+            const playerRows = await trx('GamePlayers')
+                .leftJoin('Users', 'GamePlayers.UserId', 'Users.Id')
+                .where('GamePlayers.GameId', gameId)
+                .whereIn('GamePlayers.Id', orderedPlayerIds)
+                .where('GamePlayers.status', 'idle')
+                .whereNull('GamePlayers.CanceledAt')
+                .whereNot('GamePlayers.Status', 'CANCELED')
+                .select(
+                    'GamePlayers.Id',
+                    'GamePlayers.IsVirtual',
+                    'GamePlayers.FriendGender',
+                    'Users.Gender'
+                );
+
+            if (playerRows.length !== orderedPlayerIds.length) {
+                throw new Error('Some selected players are invalid or not idle');
+            }
+
+            const rowById = new Map(
+                playerRows.map((row) => {
+                    const pairingGender = row.IsVirtual
+                        ? normalizePairingGender(row.FriendGender)
+                        : normalizePairingGender(row.Gender);
+                    return [Number(row.Id), { ...row, PairingGender: pairingGender }];
+                })
+            );
+
+            const orderedRows = orderedPlayerIds.map((id) => rowById.get(Number(id))).filter(Boolean);
+            const modeError = validatePairingModeForPlayers(pairingMode, orderedRows);
+            if (modeError) throw new Error(modeError);
+
             await trx('Matches').insert({
                 game_id: gameId,
                 court_number: courtNumber,
@@ -202,7 +290,7 @@ const startMatch = async (req, res) => {
                 start_time: trx.fn.now()
             });
 
-            const gamePlayerTableIds = [players.a1, players.a2, players.b1, players.b2].filter(Boolean);
+            const gamePlayerTableIds = [...orderedPlayerIds];
             if (gamePlayerTableIds.length > 0) {
                 await trx('GamePlayers')
                     .whereIn('Id', gamePlayerTableIds)
@@ -238,12 +326,14 @@ const buildAvatarListUrl = (req, userId, avatarUrl) => {
 const getLiveStatus = async (req, res) => {
     const { gameId } = req.params;
     if (!gameId || gameId === 'undefined') return res.status(400).json({ success: false, message: "GameId is required" });
+    const requesterUserId = req.user?.id || req.user?.UserId;
 
     const game = await knex('Games')
         .where({ GameId: gameId })
         .select('HostID', 'IsActive', 'CanceledAt')
         .first();
     const hostId = game ? game.HostID : null;
+    const isHostViewer = hostId && String(hostId) === String(requesterUserId);
 
     const players = await knex('GamePlayers')
         .leftJoin('Users', 'GamePlayers.UserId', 'Users.Id')
@@ -257,7 +347,9 @@ const getLiveStatus = async (req, res) => {
             'Users.AvatarUrl',
             'Users.badminton_level',
             'Users.verified_matches',
+            'Users.Gender',
             'GamePlayers.FriendLevel',
+            'GamePlayers.FriendGender',
             'GamePlayers.IsVirtual',
             'GamePlayers.Status as enrollStatus',
             'GamePlayers.status',
@@ -280,6 +372,11 @@ const getLiveStatus = async (req, res) => {
         verified_matches: p.verified_matches || 0,
         check_in_at: p.check_in_at,
         paid_at: p.paid_at || null,
+        pairingGender: isHostViewer
+            ? (virtualLike
+                ? normalizePairingGender(p.FriendGender)
+                : normalizePairingGender(p.Gender))
+            : null,
         isHost: !virtualLike && p.UserId === hostId,
     });
     });

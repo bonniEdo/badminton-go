@@ -89,6 +89,19 @@ const validateOAuthState = (req, provider) => {
     }
 };
 
+const USER_GENDERS = ['male', 'female', 'undisclosed'];
+const RANKING_GENDER_FILTERS = ['overall', 'male', 'female'];
+
+const normalizeUserGender = (rawGender) => {
+    const normalized = String(rawGender || '').trim().toLowerCase();
+    return USER_GENDERS.includes(normalized) ? normalized : 'undisclosed';
+};
+
+const normalizeRankingGenderFilter = (rawFilter) => {
+    const normalized = String(rawFilter || 'overall').trim().toLowerCase();
+    return RANKING_GENDER_FILTERS.includes(normalized) ? normalized : 'overall';
+};
+
 const formatUserResponse = (user) => ({
     id: user.Id,
     username: user.Username,
@@ -96,6 +109,7 @@ const formatUserResponse = (user) => ({
     avatarUrl: user.AvatarUrl || user.avatar_url,
     is_profile_completed: !!user.is_profile_completed,
     badminton_level: user.badminton_level,
+    gender: normalizeUserGender(user.Gender || user.gender),
     is_ranking_public: user.is_ranking_public !== false,
 });
 
@@ -160,6 +174,7 @@ const buildRankingPayloadForViewer = ({
     rankedAll,
     currentUserId,
     type,
+    genderFilter,
     generatedAt,
     windowDays,
     publicLimit,
@@ -223,6 +238,7 @@ const buildRankingPayloadForViewer = ({
 
     return {
         type,
+        genderFilter,
         generatedAt,
         leaderboard,
         podium,
@@ -257,7 +273,8 @@ const createUser = async (req, res) => {
             Username: username,
             Email: normalizedEmail,
             Password: hashedPassword,
-            badminton_level: 1.00
+            badminton_level: 1.00,
+            Gender: 'undisclosed'
         })
         .returning('*');
 
@@ -295,6 +312,7 @@ const loginUser = async (req, res) => {
             username: user.Username,
             is_profile_completed: !!user.is_profile_completed,
             badminton_level: user.badminton_level,
+            gender: normalizeUserGender(user.Gender),
             is_ranking_public: user.is_ranking_public !== false,
         }
     });
@@ -363,7 +381,8 @@ const lineCallback = async (req, res) => {
                     LineId: lineId,
                     AvatarUrl: picture,
                     badminton_level: 1.00,
-                    is_profile_completed: false
+                    is_profile_completed: false,
+                    Gender: 'undisclosed'
                 })
                 .returning('*');
             user = newUser;
@@ -409,6 +428,7 @@ const liffLogin = async (req, res) => {
                 Email: email || `${lineId}@line.com`,
                 LineId: lineId,
                 AvatarUrl: picture,
+                Gender: 'undisclosed'
             }).returning('*');
             user = newUser;
         }
@@ -428,6 +448,7 @@ const liffLogin = async (req, res) => {
                 avatarUrl: user.AvatarUrl,
                 is_profile_completed: !!user.is_profile_completed,
                 badminton_level: user.badminton_level,
+                gender: normalizeUserGender(user.Gender),
                 is_ranking_public: user.is_ranking_public !== false,
             }
         });
@@ -497,7 +518,8 @@ const googleCallback = async (req, res) => {
                         GoogleId: googleId,
                         AvatarUrl: picture,
                         badminton_level: 1.00,
-                        is_profile_completed: false
+                        is_profile_completed: false,
+                        Gender: 'undisclosed'
                     })
                     .returning('*');
                 user = newUser;
@@ -586,7 +608,8 @@ const facebookCallback = async (req, res) => {
                         FacebookId: facebookId,
                         AvatarUrl: avatarUrl,
                         badminton_level: 1.00,
-                        is_profile_completed: false
+                        is_profile_completed: false,
+                        Gender: 'undisclosed'
                     })
                     .returning('*');
                 user = newUser;
@@ -633,6 +656,7 @@ const exchangeLoginCode = async (req, res) => {
 const getRankings = async (req, res) => {
     const rawType = String(req.query?.type || 'score').toLowerCase();
     const type = ['score', 'active', 'progress'].includes(rawType) ? rawType : 'score';
+    const genderFilter = normalizeRankingGenderFilter(req.query?.genderFilter);
     const publicLimit = 10;
     const windowDays = Math.min(90, Math.max(7, Number(req.query?.windowDays || 30)));
     const currentUserId = Number(req.user?.id || 0) || null;
@@ -656,12 +680,14 @@ const getRankings = async (req, res) => {
                     snapshot_date: snapshotDate,
                     type,
                     window_days: windowDays,
-                    public_limit: publicLimit
+                    public_limit: publicLimit,
+                    gender_filter: genderFilter
                 })
                 .first();
         } catch (snapshotReadError) {
-            // 42P01: table does not exist yet (migration not run). Fall back to live compute.
-            if (snapshotReadError?.code !== '42P01') {
+            // 42P01: table does not exist yet.
+            // 42703: column does not exist yet.
+            if (snapshotReadError?.code !== '42P01' && snapshotReadError?.code !== '42703') {
                 console.error('Read ranking snapshot failed:', snapshotReadError.message);
             }
         }
@@ -677,6 +703,7 @@ const getRankings = async (req, res) => {
                     rankedAll: cachedSnapshot.ranked_all,
                     currentUserId,
                     type,
+                    genderFilter,
                     generatedAt,
                     windowDays,
                     publicLimit,
@@ -686,16 +713,22 @@ const getRankings = async (req, res) => {
         }
 
         const users = await knex('Users')
-            .select('Id', 'Username', 'AvatarUrl', 'badminton_level', 'verified_matches', 'is_ranking_public');
+            .select('Id', 'Username', 'AvatarUrl', 'badminton_level', 'verified_matches', 'is_ranking_public', 'Gender');
         const visibilityByUserId = buildRankingVisibilityMap(users);
 
-        if (users.length === 0) {
+        const usersByGender = users.filter((user) => {
+            if (genderFilter === 'overall') return true;
+            return normalizeUserGender(user.Gender) === genderFilter;
+        });
+
+        if (usersByGender.length === 0) {
             return res.json({
                 success: true,
                 data: buildRankingPayloadForViewer({
                     rankedAll: [],
                     currentUserId,
                     type,
+                    genderFilter,
                     generatedAt: new Date().toISOString(),
                     windowDays,
                     publicLimit,
@@ -707,7 +740,7 @@ const getRankings = async (req, res) => {
         const statsByUserId = new Map();
         const userMetaById = new Map();
         const mentorBonusByUserId = new Map();
-        for (const user of users) {
+        for (const user of usersByGender) {
             const userId = Number(user.Id);
             const level = Number(user.badminton_level || 1);
             const verifiedMatches = Number(user.verified_matches || 0);
@@ -887,7 +920,7 @@ const getRankings = async (req, res) => {
             }
         }
 
-        const rows = users.map((user) => {
+        const rows = usersByGender.map((user) => {
             const userId = Number(user.Id);
             const stat = statsByUserId.get(userId) || {
                 matches: 0,
@@ -1042,6 +1075,7 @@ const getRankings = async (req, res) => {
             rankedAll,
             currentUserId,
             type,
+            genderFilter,
             generatedAt,
             windowDays,
             publicLimit,
@@ -1056,18 +1090,20 @@ const getRankings = async (req, res) => {
                     type,
                     window_days: windowDays,
                     public_limit: publicLimit,
+                    gender_filter: genderFilter,
                     generated_at: generatedAt,
                     ranked_all: rankedAllJson
                 })
-                .onConflict(['snapshot_date', 'type', 'window_days', 'public_limit'])
+                .onConflict(['snapshot_date', 'type', 'window_days', 'public_limit', 'gender_filter'])
                 .merge({
                     generated_at: generatedAt,
                     ranked_all: rankedAllJson,
                     updated_at: knex.fn.now()
                 });
         } catch (snapshotWriteError) {
-            // 42P01: table does not exist yet (migration not run). Keep API response available.
-            if (snapshotWriteError?.code !== '42P01') {
+            // 42P01: table does not exist yet.
+            // 42703: column does not exist yet.
+            if (snapshotWriteError?.code !== '42P01' && snapshotWriteError?.code !== '42703') {
                 console.error('Write ranking snapshot failed:', snapshotWriteError.message);
             }
         }
@@ -1081,11 +1117,16 @@ const getRankings = async (req, res) => {
     }
 };
 const rating = async (req, res) => {
-    const { years, level } = req.body;
+    const { level } = req.body;
+    const gender = normalizeUserGender(req.body?.gender);
     const userId = req.user.id;
 
+    if (!USER_GENDERS.includes(gender)) {
+        return res.status(400).json({ success: false, message: 'Invalid gender value' });
+    }
+
     let numericLevel = 1.0;
-    const match = level.match(/(\d+)(-(\d+))?/);
+    const match = String(level || '').match(/(\d+)(-(\d+))?/);
     if (match) {
         if (match[3]) {
             numericLevel = (parseFloat(match[1]) + parseFloat(match[3])) / 2;
@@ -1098,8 +1139,8 @@ const rating = async (req, res) => {
         await knex('Users')
             .where({ Id: userId })
             .update({
-                experience_years: years,
                 badminton_level: numericLevel,
+                Gender: gender,
                 is_profile_completed: true,
                 play_frequency: req.body.frequency || null,
                 play_style: req.body.playStyle || null,
@@ -1133,6 +1174,7 @@ const getMe = async (req, res) => {
                 is_profile_completed: !!user.is_profile_completed,
                 badminton_level: user.badminton_level,
                 verified_matches: user.verified_matches,
+                gender: normalizeUserGender(user.Gender),
                 is_ranking_public: user.is_ranking_public !== false,
             }
         });
@@ -1331,6 +1373,7 @@ const updateAvatar = async (req, res) => {
                 is_profile_completed: !!user.is_profile_completed,
                 badminton_level: user.badminton_level,
                 verified_matches: user.verified_matches,
+                gender: normalizeUserGender(user.Gender),
                 is_ranking_public: user.is_ranking_public !== false,
             }
         });

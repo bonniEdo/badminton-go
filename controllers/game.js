@@ -18,6 +18,12 @@ const locationSelect = knex.raw(`
     END as "Location"
 `);
 
+const FRIEND_GENDERS = ['male', 'female', 'undisclosed'];
+const normalizeFriendGender = (rawGender) => {
+    const normalized = String(rawGender || '').trim().toLowerCase();
+    return FRIEND_GENDERS.includes(normalized) ? normalized : 'undisclosed';
+};
+
 
 const createGame = async (req, res) => {
     const userId = req.user.id;
@@ -297,6 +303,7 @@ const joinGame = async (req, res) => {
     const gameId = req.params.id;
     const userId = req.user.id;
     const { phone, numPlayers, friendLevel } = req.body;
+    const friendGender = normalizeFriendGender(req.body?.friendGender);
     const requestedPlayers = Number(numPlayers || 1);
     if (![1, 2].includes(requestedPlayers)) {
         throw new AppError("報名人數僅限 1 或 2 位", 400);
@@ -371,7 +378,8 @@ const joinGame = async (req, res) => {
                 ...commonPayload,
                 FriendCount: 0,
                 IsVirtual: true,
-                FriendLevel: friendLevel
+                FriendLevel: friendLevel,
+                FriendGender: friendGender
             };
 
             if (existingVirtual) {
@@ -582,6 +590,7 @@ const addFriend = async (req, res) => {
     const gameId = Number(req.params.id);
     const userId = req.user?.id;
     const { friendLevel } = req.body;
+    const friendGender = normalizeFriendGender(req.body?.friendGender);
     if (!Number.isInteger(gameId) || gameId <= 0) {
         throw new AppError("缺少療程編號", 400);
     }
@@ -612,6 +621,7 @@ const addFriend = async (req, res) => {
             FriendCount: 0,
             IsVirtual: true,
             FriendLevel: friendLevel,
+            FriendGender: friendGender,
             JoinedAt: trx.fn.now(),
             status: initialStatus,
             check_in_at: initialCheckInAt,
