@@ -44,6 +44,7 @@ const createGame = async (req, res) => {
             CourtNumber: courtNumber || null,
             IsActive: true,
         })
+        .whereNull("DeletedAt")
         .first();
 
     if (existingGame) {
@@ -94,7 +95,7 @@ const updateGame = async (req, res) => {
 
     if (!gameId) throw new AppError("缺少療程編號", 400);
 
-    const game = await knex("Games").where({ GameId: gameId }).first();
+    const game = await knex("Games").where({ GameId: gameId }).whereNull("DeletedAt").first();
     if (!game) throw new AppError("找不到此療程", 404);
     if (String(game.HostID) !== String(userId)) throw new AppError("權限不足，只有主治可以編輯療程", 403);
     if (!game.IsActive || game.CanceledAt) throw new AppError("此療程已終止，無法編輯", 400);
@@ -124,6 +125,7 @@ const updateGame = async (req, res) => {
             CourtNumber: courtNumber || null,
             IsActive: true,
         })
+        .whereNull("DeletedAt")
         .whereNot({ GameId: gameId })
         .first();
 
@@ -190,6 +192,7 @@ const getGame = async (req, res) => {
         .where({
             HostID: userId,
         })
+        .whereNull("Games.DeletedAt")
         .select(
             "Games.GameId",
             "Games.Title",
@@ -229,6 +232,7 @@ const getAllGames = async (req, res) => {
         .join("Users", "Games.HostID", "Users.Id")
         .where("IsActive", true)
         .whereNull("Games.CanceledAt")
+        .whereNull("Games.DeletedAt")
         .select(
             "Games.GameId",
             "Games.Title",
@@ -265,7 +269,7 @@ const getAllGames = async (req, res) => {
     });
 };
 
-const deleteGame = async (req, res) => {
+const closeGame = async (req, res) => {
     const gameId = req.params.id;
     const userId = req.user.id;
 
@@ -273,7 +277,7 @@ const deleteGame = async (req, res) => {
         return res.status(400).json({ success: false, message: "缺少療程名稱" });
     }
 
-    const game = await knex("Games").where({ GameId: gameId }).first();
+    const game = await knex("Games").where({ GameId: gameId }).whereNull("DeletedAt").first();
     if (!game) throw new AppError("找不到此療程", 404);
 
     if (String(game.HostID) !== String(userId)) {
@@ -299,6 +303,45 @@ const deleteGame = async (req, res) => {
     });
 };
 
+const deleteGame = async (req, res) => {
+    const gameId = req.params.id;
+    const userId = req.user.id;
+
+    if (!gameId) {
+        return res.status(400).json({ success: false, message: "Missing game id" });
+    }
+
+    const game = await knex("Games").where({ GameId: gameId }).whereNull("DeletedAt").first();
+    if (!game) throw new AppError("Game not found", 404);
+
+    if (String(game.HostID) !== String(userId)) {
+        return res.status(403).json({ success: false, message: "Only host can delete this game" });
+    }
+
+    await knex.transaction(async (trx) => {
+        await trx("GamePlayers")
+            .where({ GameId: gameId })
+            .whereNot("Status", "CANCELED")
+            .update({
+                Status: "CANCELED",
+                CanceledAt: trx.fn.now(),
+            });
+
+        await trx("Games")
+            .where({ GameId: gameId })
+            .update({
+                IsActive: false,
+                CanceledAt: trx.raw('COALESCE("CanceledAt", NOW())'),
+                DeletedAt: trx.fn.now(),
+            });
+    });
+
+    res.status(200).json({
+        success: true,
+        message: "Game deleted",
+    });
+};
+
 const joinGame = async (req, res) => {
     const gameId = req.params.id;
     const userId = req.user.id;
@@ -316,7 +359,7 @@ const joinGame = async (req, res) => {
     const totalToJoin = 1 + friendCount;
 
     const result = await knex.transaction(async (trx) => {
-        const game = await trx("Games").where({ GameId: gameId }).forUpdate().first();
+        const game = await trx("Games").where({ GameId: gameId }).whereNull("DeletedAt").forUpdate().first();
         if (!game) throw new AppError("沒有此療程", 404);
         if (!game.IsActive || game.CanceledAt) throw new AppError("此療程已被終止", 400);
 
@@ -425,6 +468,7 @@ const getJoinedGames = async (req, res) => {
         .where("GamePlayers.UserId", userId)
         .where("Games.IsActive", true)
         .whereNull("Games.CanceledAt")
+        .whereNull("Games.DeletedAt")
         .where(function () {
             this.where("GamePlayers.IsVirtual", false).orWhereNull("GamePlayers.IsVirtual");
         })
@@ -470,9 +514,10 @@ const cancelJoin = async (req, res) => {
         const player = await trx("GamePlayers")
             .where({ GameId: gameId, UserId: userId, IsVirtual: false })
             .first();
-        const game = await trx("Games").where({ GameId: gameId }).forUpdate().first();
+        const game = await trx("Games").where({ GameId: gameId }).whereNull("DeletedAt").forUpdate().first();
 
         if (!player || player.Status === "CANCELED") throw new Error("找不到掛號紀錄");
+        if (!game) throw new AppError("Game not found", 404);
         if (player.status !== 'waiting_checkin') {
             throw new AppError("您已報到或在場上，無法自行取消。如需取消請聯繫主治。", 400);
         }
@@ -556,6 +601,10 @@ const cancelJoin = async (req, res) => {
 };
 const playerList = async (req, res) => {
     const gameId = req.params.id;
+    const game = await knex("Games").where({ GameId: gameId }).whereNull("DeletedAt").first();
+    if (!game) {
+        return res.status(404).json({ success: false, message: "Game not found" });
+    }
 
     const players = await knex("GamePlayers")
         .join("Users", "GamePlayers.UserId", "Users.Id")
@@ -657,7 +706,8 @@ const addFriend = async (req, res) => {
             .first();
 
         const currentConfirmedTotal = Number(confRes.total || 0);
-        const game = await trx("Games").where({ GameId: gameId }).forUpdate().first();
+        const game = await trx("Games").where({ GameId: gameId }).whereNull("DeletedAt").forUpdate().first();
+        if (!game) throw new AppError("Game not found", 404);
 
         if (player.Status === "CONFIRMED" && currentConfirmedTotal > game.MaxPlayers) {
             console.log(`[DEBUG] 人數爆滿，將使用者 ${userId} 及其朋友轉為 WAITLIST`);
@@ -685,6 +735,7 @@ const getGameById = async (req, res) => {
     try {
         const game = await knex("Games")
             .where("GameId", id)
+            .whereNull("DeletedAt")
             .select(
                 "GameId",
                 "Title",
@@ -719,7 +770,7 @@ const markPaid = async (req, res) => {
     const { playerId } = req.body;
 
     try {
-        const game = await knex("Games").where({ GameId: gameId, HostID: userId }).first();
+        const game = await knex("Games").where({ GameId: gameId, HostID: userId }).whereNull("DeletedAt").first();
         if (!game) return res.status(403).json({ success: false, message: "僅主治可操作" });
 
         const player = await knex("GamePlayers").where({ Id: playerId, GameId: gameId }).first();
@@ -751,6 +802,7 @@ module.exports = {
     updateGame,
     getGame,
     getAllGames,
+    closeGame,
     deleteGame,
     joinGame,
     getJoinedGames,

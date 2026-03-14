@@ -159,7 +159,7 @@ const setNextGroup = async (req, res) => {
     }
 
     try {
-        const game = await knex('Games').where({ GameId: gameId }).select('HostID').first();
+        const game = await knex('Games').where({ GameId: gameId }).whereNull('DeletedAt').select('HostID').first();
         if (!game || String(game.HostID) !== String(hostUserId)) {
             return res.status(403).json({ success: false, message: 'Only host can update next group' });
         }
@@ -231,7 +231,7 @@ const startMatch = async (req, res) => {
 
     try {
         await knex.transaction(async (trx) => {
-            const game = await trx('Games').where({ GameId: gameId }).select('HostID').first();
+            const game = await trx('Games').where({ GameId: gameId }).whereNull('DeletedAt').select('HostID').first();
             if (!game || String(game.HostID) !== String(hostUserId)) {
                 throw new Error('Only host can start matches');
             }
@@ -337,8 +337,12 @@ const getLiveStatus = async (req, res) => {
 
     const game = await knex('Games')
         .where({ GameId: gameId })
+        .whereNull('DeletedAt')
         .select('HostID', 'IsActive', 'CanceledAt')
         .first();
+    if (!game) {
+        return res.status(404).json({ success: false, message: 'Game not found' });
+    }
     const hostId = game ? game.HostID : null;
     const isHostViewer = hostId && String(hostId) === String(requesterUserId);
 
@@ -422,7 +426,7 @@ const finishMatch = async (req, res) => {
         const match = await trx('Matches').where({ id: matchId }).first();
         if (!match) throw new Error('Match not found');
 
-        const game = await trx('Games').where({ GameId: match.game_id }).select('HostID').first();
+        const game = await trx('Games').where({ GameId: match.game_id }).whereNull('DeletedAt').select('HostID').first();
         if (!game || String(game.HostID) !== String(hostUserId)) {
             throw new Error('Only host can finish matches');
         }
@@ -520,10 +524,13 @@ const getMyHistory = async (req, res) => {
 
     const myMatches = await knex('Matches')
         .leftJoin('Games', 'Matches.game_id', 'Games.GameId')
-        .whereIn('player_a1', myPlayerIds)
-        .orWhereIn('player_a2', myPlayerIds)
-        .orWhereIn('player_b1', myPlayerIds)
-        .orWhereIn('player_b2', myPlayerIds)
+        .where(function () {
+            this.whereIn('player_a1', myPlayerIds)
+                .orWhereIn('player_a2', myPlayerIds)
+                .orWhereIn('player_b1', myPlayerIds)
+                .orWhereIn('player_b2', myPlayerIds);
+        })
+        .whereNull('Games.DeletedAt')
         .select(
             'Matches.id',
             'Matches.court_number',
@@ -619,7 +626,7 @@ const hostCheckin = async (req, res) => {
     const hostUserId = req.user?.id || req.user?.UserId;
 
     try {
-        const game = await knex('Games').where({ GameId: gameId }).select('HostID').first();
+        const game = await knex('Games').where({ GameId: gameId }).whereNull('DeletedAt').select('HostID').first();
         if (!game || String(game.HostID) !== String(hostUserId)) {
             return res.status(403).json({ success: false, message: 'Only host can check in players' });
         }
