@@ -39,6 +39,14 @@ const normalizePairingGender = (rawGender) => {
     return 'undisclosed';
 };
 
+const resolvePairingGender = (row) => {
+    if (!row) return 'undisclosed';
+    if (row.IsVirtual) return normalizePairingGender(row.FriendGender);
+    const isVisible = row.is_pairing_gender_visible !== false;
+    if (!isVisible) return 'undisclosed';
+    return normalizePairingGender(row.Gender);
+};
+
 const validatePairingModeForPlayers = (mode, playerRows) => {
     if (mode === 'open_doubles') return null;
     if (!Array.isArray(playerRows) || playerRows.length !== 4) {
@@ -259,7 +267,8 @@ const startMatch = async (req, res) => {
                     'GamePlayers.Id',
                     'GamePlayers.IsVirtual',
                     'GamePlayers.FriendGender',
-                    'Users.Gender'
+                    'Users.Gender',
+                    'Users.is_pairing_gender_visible'
                 );
 
             if (playerRows.length !== orderedPlayerIds.length) {
@@ -268,9 +277,7 @@ const startMatch = async (req, res) => {
 
             const rowById = new Map(
                 playerRows.map((row) => {
-                    const pairingGender = row.IsVirtual
-                        ? normalizePairingGender(row.FriendGender)
-                        : normalizePairingGender(row.Gender);
+                    const pairingGender = resolvePairingGender(row);
                     return [Number(row.Id), { ...row, PairingGender: pairingGender }];
                 })
             );
@@ -348,6 +355,7 @@ const getLiveStatus = async (req, res) => {
             'Users.badminton_level',
             'Users.verified_matches',
             'Users.Gender',
+            'Users.is_pairing_gender_visible',
             'GamePlayers.FriendLevel',
             'GamePlayers.FriendGender',
             'GamePlayers.IsVirtual',
@@ -373,9 +381,7 @@ const getLiveStatus = async (req, res) => {
         check_in_at: p.check_in_at,
         paid_at: p.paid_at || null,
         pairingGender: isHostViewer
-            ? (virtualLike
-                ? normalizePairingGender(p.FriendGender)
-                : normalizePairingGender(p.Gender))
+            ? resolvePairingGender(p)
             : null,
         isHost: !virtualLike && p.UserId === hostId,
     });

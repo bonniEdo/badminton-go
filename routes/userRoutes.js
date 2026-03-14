@@ -17,7 +17,9 @@ const {
   getFacebookAuthUrl,
   exchangeLoginCode,
   getRankings,
-  updateRankingVisibility
+  updateRankingVisibility,
+  updateGenderPreference,
+  updateGenderPairingVisibility
 } = require('../controllers/user')
 const verifyToken = require('../middlewares/auth');
 
@@ -37,6 +39,8 @@ router.post('/complete-rating', verifyToken, rating);
 router.get('/me', verifyToken, getMe);
 router.get('/rankings', verifyToken, getRankings);
 router.patch('/ranking-visibility', verifyToken, updateRankingVisibility);
+router.patch('/gender', verifyToken, updateGenderPreference);
+router.patch('/gender-pairing-visibility', verifyToken, updateGenderPairingVisibility);
 router.get('/public/:id', verifyToken, getPublicProfile);
 router.get('/avatar/:id', getAvatarById);
 router.post('/avatar', verifyToken, updateAvatar);

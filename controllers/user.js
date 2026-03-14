@@ -97,6 +97,8 @@ const normalizeUserGender = (rawGender) => {
     return USER_GENDERS.includes(normalized) ? normalized : 'undisclosed';
 };
 
+const normalizePairingGenderVisibility = (rawVisibility) => rawVisibility !== false;
+
 const normalizeRankingGenderFilter = (rawFilter) => {
     const normalized = String(rawFilter || 'overall').trim().toLowerCase();
     return RANKING_GENDER_FILTERS.includes(normalized) ? normalized : 'overall';
@@ -110,6 +112,7 @@ const formatUserResponse = (user) => ({
     is_profile_completed: !!user.is_profile_completed,
     badminton_level: user.badminton_level,
     gender: normalizeUserGender(user.Gender || user.gender),
+    is_pairing_gender_visible: normalizePairingGenderVisibility(user.is_pairing_gender_visible),
     is_ranking_public: user.is_ranking_public !== false,
 });
 
@@ -1175,6 +1178,7 @@ const getMe = async (req, res) => {
                 badminton_level: user.badminton_level,
                 verified_matches: user.verified_matches,
                 gender: normalizeUserGender(user.Gender),
+                is_pairing_gender_visible: normalizePairingGenderVisibility(user.is_pairing_gender_visible),
                 is_ranking_public: user.is_ranking_public !== false,
             }
         });
@@ -1205,6 +1209,83 @@ const updateRankingVisibility = async (req, res) => {
         });
     } catch (error) {
         return res.status(500).json({ success: false, message: 'Failed to update ranking visibility' });
+    }
+};
+
+const updateGenderPreference = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const rawGender = String(req.body?.gender || '').trim().toLowerCase();
+        if (!USER_GENDERS.includes(rawGender)) {
+            return res.status(400).json({ success: false, message: 'gender must be male/female/undisclosed' });
+        }
+
+        const currentUser = await knex('Users')
+            .where({ Id: userId })
+            .first('Gender');
+
+        if (!currentUser) {
+            return res.status(404).json({ success: false, message: 'User not found' });
+        }
+
+        const currentGender = normalizeUserGender(currentUser.Gender);
+        const isLocked = currentGender !== 'undisclosed';
+        if (isLocked && rawGender !== currentGender) {
+            return res.status(403).json({
+                success: false,
+                message: 'Gender is locked after first setup. Please contact developer for changes.'
+            });
+        }
+
+        await knex('Users')
+            .where({ Id: userId })
+            .update({ Gender: rawGender });
+
+        const updatedUser = await knex('Users')
+            .where({ Id: userId })
+            .first();
+
+        if (!updatedUser) {
+            return res.status(404).json({ success: false, message: 'User not found' });
+        }
+
+        return res.json({
+            success: true,
+            message: 'Gender updated',
+            user: formatUserResponse(updatedUser)
+        });
+    } catch (error) {
+        return res.status(500).json({ success: false, message: 'Failed to update gender' });
+    }
+};
+
+const updateGenderPairingVisibility = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { isVisible } = req.body || {};
+        if (typeof isVisible !== 'boolean') {
+            return res.status(400).json({ success: false, message: 'isVisible must be boolean' });
+        }
+
+        await knex('Users')
+            .where({ Id: userId })
+            .update({ is_pairing_gender_visible: isVisible });
+
+        const updatedUser = await knex('Users')
+            .where({ Id: userId })
+            .first();
+
+        if (!updatedUser) {
+            return res.status(404).json({ success: false, message: 'User not found' });
+        }
+
+        return res.json({
+            success: true,
+            message: isVisible ? 'Pairing gender visibility enabled' : 'Pairing gender visibility disabled',
+            user: formatUserResponse(updatedUser)
+        });
+    } catch (error) {
+        return res.status(500).json({ success: false, message: 'Failed to update pairing gender visibility' });
     }
 };
 
@@ -1374,6 +1455,7 @@ const updateAvatar = async (req, res) => {
                 badminton_level: user.badminton_level,
                 verified_matches: user.verified_matches,
                 gender: normalizeUserGender(user.Gender),
+                is_pairing_gender_visible: normalizePairingGenderVisibility(user.is_pairing_gender_visible),
                 is_ranking_public: user.is_ranking_public !== false,
             }
         });
@@ -1400,5 +1482,7 @@ module.exports = {
     getFacebookAuthUrl,
     exchangeLoginCode,
     getRankings,
-    updateRankingVisibility
+    updateRankingVisibility,
+    updateGenderPreference,
+    updateGenderPairingVisibility
 };
