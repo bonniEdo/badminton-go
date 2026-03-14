@@ -660,7 +660,7 @@ const getRankings = async (req, res) => {
     const rawType = String(req.query?.type || 'score').toLowerCase();
     const type = ['score', 'active', 'progress'].includes(rawType) ? rawType : 'score';
     const genderFilter = normalizeRankingGenderFilter(req.query?.genderFilter);
-    const publicLimit = 10;
+    const publicLimit = (type === 'active' || type === 'progress') ? 5 : 10;
     const windowDays = Math.min(90, Math.max(7, Number(req.query?.windowDays || 30)));
     const currentUserId = Number(req.user?.id || 0) || null;
     const NEWBIE_VERIFIED_THRESHOLD = 10;
@@ -1006,10 +1006,10 @@ const getRankings = async (req, res) => {
         } else if (type === 'active') {
             filtered = rows.filter((row) => row.recentMatches > 0 || row.matches > 0);
         } else if (type === 'progress') {
-            filtered = rows.filter((row) => row.currentWeekMatches > 0 || row.prevWeekMatches > 0);
+            filtered = rows.filter((row) => (row.progressScore || 0) > 0);
         }
 
-        if (filtered.length === 0) {
+        if (filtered.length === 0 && type === 'score') {
             filtered = rows;
         }
 
