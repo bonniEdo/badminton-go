@@ -135,8 +135,8 @@ const RANKING_SNAPSHOT_DEFAULT_WINDOW_DAYS = Math.min(
 );
 const RANKING_SNAPSHOT_PRECOMPUTE_TYPES = ['score', 'active', 'progress'];
 const RANKING_SNAPSHOT_PRECOMPUTE_GENDER_FILTERS = ['overall', 'male', 'female'];
-const WIN_RATE_DISPLAY_THRESHOLD = 50;
-const WIN_RATE_PLACEHOLDER = '-';
+const WIN_RATE_DISPLAY_THRESHOLD = 40;
+const WIN_RATE_PLACEHOLDER = '干你屁事哈哈';
 const WIN_RATE_FIELDS = ['winRate', 'recentWinRate', 'currentWeekWinRate', 'prevWeekWinRate'];
 
 const getRankingSnapshotDateKey = (date = new Date()) => {
