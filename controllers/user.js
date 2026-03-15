@@ -135,6 +135,9 @@ const RANKING_SNAPSHOT_DEFAULT_WINDOW_DAYS = Math.min(
 );
 const RANKING_SNAPSHOT_PRECOMPUTE_TYPES = ['score', 'active', 'progress'];
 const RANKING_SNAPSHOT_PRECOMPUTE_GENDER_FILTERS = ['overall', 'male', 'female'];
+const WIN_RATE_DISPLAY_THRESHOLD = 50;
+const WIN_RATE_PLACEHOLDER = '-';
+const WIN_RATE_FIELDS = ['winRate', 'recentWinRate', 'currentWeekWinRate', 'prevWeekWinRate'];
 
 const getRankingSnapshotDateKey = (date = new Date()) => {
     const formatter = new Intl.DateTimeFormat('en-US', {
@@ -189,6 +192,25 @@ const normalizeRankedRows = (rows) => {
         .sort((a, b) => Number(a.rank || 0) - Number(b.rank || 0));
 };
 
+const formatWinRateForDisplay = (rawRate) => {
+    const numericRate = Number(rawRate);
+    if (!Number.isFinite(numericRate)) return WIN_RATE_PLACEHOLDER;
+    return numericRate > WIN_RATE_DISPLAY_THRESHOLD ? numericRate : WIN_RATE_PLACEHOLDER;
+};
+
+const applyWinRateDisplayRule = (row) => {
+    if (!row || typeof row !== 'object') return row;
+    const formattedRow = { ...row };
+
+    for (const field of WIN_RATE_FIELDS) {
+        if (Object.prototype.hasOwnProperty.call(formattedRow, field)) {
+            formattedRow[field] = formatWinRateForDisplay(formattedRow[field]);
+        }
+    }
+
+    return formattedRow;
+};
+
 const buildRankingPayloadForViewer = ({
     rankedAll,
     currentUserId,
@@ -214,7 +236,7 @@ const buildRankingPayloadForViewer = ({
     const maskRowForViewer = (row) => {
         const isSelf = !!currentUserId && Number(row.userId) === Number(currentUserId);
         const canViewDetail = isSelf || resolveIsPublic(row);
-        if (canViewDetail) return { ...row, masked: false };
+        if (canViewDetail) return { ...applyWinRateDisplayRule(row), masked: false };
 
         return {
             ...row,
@@ -1423,18 +1445,18 @@ const getPublicProfile = async (req, res) => {
 
         const playerEntryIds = entries.map((entry) => entry.Id);
         if (playerEntryIds.length === 0) {
-        return res.json({
-            success: true,
-            data: {
-                id: user.Id,
-                username: user.Username,
-                avatarUrl: buildAvatarAssetUrl(req, user.Id, user.AvatarUrl),
-                level: Number(user.badminton_level || 1),
-                verified_matches: Number(user.verified_matches || 0),
-                matches: 0,
+            return res.json({
+                success: true,
+                data: {
+                    id: user.Id,
+                    username: user.Username,
+                    avatarUrl: buildAvatarAssetUrl(req, user.Id, user.AvatarUrl),
+                    level: Number(user.badminton_level || 1),
+                    verified_matches: Number(user.verified_matches || 0),
+                    matches: 0,
                     wins: 0,
                     losses: 0,
-                    winRate: 0
+                    winRate: WIN_RATE_PLACEHOLDER
                 }
             });
         }
@@ -1484,7 +1506,7 @@ const getPublicProfile = async (req, res) => {
                 matches,
                 wins,
                 losses,
-                winRate
+                winRate: formatWinRateForDisplay(winRate)
             }
         });
     } catch (error) {
