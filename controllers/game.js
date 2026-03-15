@@ -183,6 +183,7 @@ const getGame = async (req, res) => {
 
 
     const activeGames = await knex("Games")
+        .join("Users", "Games.HostID", "Users.Id")
         .leftJoin({ gpSelf: "GamePlayers" }, function () {
             this.on("gpSelf.GameId", "=", "Games.GameId")
                 .andOn("gpSelf.UserId", "=", "Games.HostID")
@@ -207,6 +208,8 @@ const getGame = async (req, res) => {
             "Games.CanceledAt",
             knex.ref("gpSelf.status").as("status"),
             knex.ref("gpSelf.check_in_at").as("check_in_at"),
+            knex.ref("Users.Username").as("hostName"),
+            knex.ref("Users.AvatarUrl").as("hostAvatarUrl"),
             currentPlayersSubquery(),
             totalCountSubquery()
         )
@@ -462,12 +465,12 @@ const joinGame = async (req, res) => {
 
 const getJoinedGames = async (req, res) => {
     const userId = req.user.id;
+    const includePast = ["1", "true", "yes"].includes(String(req.query.includePast || "").toLowerCase());
 
-    const joinedGames = await knex("GamePlayers")
+    const joinedGamesQuery = knex("GamePlayers")
         .join("Games", "GamePlayers.GameId", "Games.GameId")
+        .join("Users", "Games.HostID", "Users.Id")
         .where("GamePlayers.UserId", userId)
-        .where("Games.IsActive", true)
-        .whereNull("Games.CanceledAt")
         .whereNull("Games.DeletedAt")
         .where(function () {
             this.where("GamePlayers.IsVirtual", false).orWhereNull("GamePlayers.IsVirtual");
@@ -483,6 +486,7 @@ const getJoinedGames = async (req, res) => {
             "Games.EndTime",
             "Games.Price",
             "Games.MaxPlayers",
+            "Games.HostID",
             knex.ref("GamePlayers.Status").as("MyStatus"),
             "GamePlayers.JoinedAt",
             "GamePlayers.FriendCount",
@@ -493,11 +497,23 @@ const getJoinedGames = async (req, res) => {
             "Games.HostContact",
             'GamePlayers.status',
             'GamePlayers.check_in_at',
-
+            knex.ref("Users.Username").as("hostName"),
+            knex.ref("Users.AvatarUrl").as("hostAvatarUrl"),
         )
         .orderBy("Games.GameDateTime", "desc");
+
+    if (!includePast) {
+        joinedGamesQuery.where("Games.IsActive", true).whereNull("Games.CanceledAt");
+    }
+
+    const joinedGames = await joinedGamesQuery;
     const processedGames = GameStatus(joinedGames);
-    const sortedGames = processedGames.sort((a, b) => a.isExpired - b.isExpired);
+    const sortedGames = processedGames
+        .sort((a, b) => a.isExpired - b.isExpired)
+        .map((g) => ({
+            ...g,
+            hostAvatarUrl: buildAvatarListUrl(req, g.HostID, g.hostAvatarUrl)
+        }));
     res.status(200).json({
         success: true,
         data: sortedGames,
