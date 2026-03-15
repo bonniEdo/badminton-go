@@ -125,6 +125,10 @@ const buildAvatarAssetUrl = (req, userId, avatarUrl) => {
 };
 
 const RANKING_SNAPSHOT_TZ = process.env.RANKING_SNAPSHOT_TZ || 'Asia/Taipei';
+const RANKING_SNAPSHOT_REFRESH_MINUTES = Math.max(
+    1,
+    Number(process.env.RANKING_SNAPSHOT_REFRESH_MINUTES || 10)
+);
 
 const getRankingSnapshotDateKey = (date = new Date()) => {
     const formatter = new Intl.DateTimeFormat('en-US', {
@@ -139,6 +143,12 @@ const getRankingSnapshotDateKey = (date = new Date()) => {
     const day = parts.find((part) => part.type === 'day')?.value;
     if (!year || !month || !day) return dayjs(date).format('YYYY-MM-DD');
     return `${year}-${month}-${day}`;
+};
+
+const isRankingSnapshotFresh = (generatedAt) => {
+    const parsedGeneratedAt = dayjs(generatedAt);
+    if (!parsedGeneratedAt.isValid()) return false;
+    return dayjs().diff(parsedGeneratedAt, 'minute', true) < RANKING_SNAPSHOT_REFRESH_MINUTES;
 };
 
 const buildRankingVisibilityMap = (users) => {
@@ -695,7 +705,7 @@ const getRankings = async (req, res) => {
             }
         }
 
-        if (cachedSnapshot?.ranked_all) {
+        if (cachedSnapshot?.ranked_all && isRankingSnapshotFresh(cachedSnapshot.generated_at)) {
             const visibilityUsers = await knex('Users').select('Id', 'is_ranking_public');
             const visibilityByUserId = buildRankingVisibilityMap(visibilityUsers);
             const cachedAt = dayjs(cachedSnapshot.generated_at);
