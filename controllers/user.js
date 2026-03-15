@@ -135,8 +135,6 @@ const RANKING_SNAPSHOT_DEFAULT_WINDOW_DAYS = Math.min(
 );
 const RANKING_SNAPSHOT_PRECOMPUTE_TYPES = ['score', 'active', 'progress'];
 const RANKING_SNAPSHOT_PRECOMPUTE_GENDER_FILTERS = ['overall', 'male', 'female'];
-const WIN_RATE_DISPLAY_THRESHOLD = 40;
-const WIN_RATE_PLACEHOLDER = '干你屁事哈哈';
 const WIN_RATE_FIELDS = ['winRate', 'recentWinRate', 'currentWeekWinRate', 'prevWeekWinRate'];
 
 const getRankingSnapshotDateKey = (date = new Date()) => {
@@ -194,8 +192,9 @@ const normalizeRankedRows = (rows) => {
 
 const formatWinRateForDisplay = (rawRate) => {
     const numericRate = Number(rawRate);
-    if (!Number.isFinite(numericRate)) return WIN_RATE_PLACEHOLDER;
-    return numericRate > WIN_RATE_DISPLAY_THRESHOLD ? numericRate : WIN_RATE_PLACEHOLDER;
+    if (!Number.isFinite(numericRate)) return null;
+    const normalized = Math.max(0, Math.min(100, numericRate));
+    return Number(normalized.toFixed(1));
 };
 
 const applyWinRateDisplayRule = (row) => {
@@ -1456,7 +1455,7 @@ const getPublicProfile = async (req, res) => {
                     matches: 0,
                     wins: 0,
                     losses: 0,
-                    winRate: WIN_RATE_PLACEHOLDER
+                    winRate: 0
                 }
             });
         }
