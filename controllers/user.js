@@ -129,6 +129,12 @@ const RANKING_SNAPSHOT_REFRESH_MINUTES = Math.max(
     1,
     Number(process.env.RANKING_SNAPSHOT_REFRESH_MINUTES || 10)
 );
+const RANKING_SNAPSHOT_DEFAULT_WINDOW_DAYS = Math.min(
+    90,
+    Math.max(7, Number(process.env.RANKING_SNAPSHOT_DEFAULT_WINDOW_DAYS || 30))
+);
+const RANKING_SNAPSHOT_PRECOMPUTE_TYPES = ['score', 'active', 'progress'];
+const RANKING_SNAPSHOT_PRECOMPUTE_GENDER_FILTERS = ['overall', 'male', 'female'];
 
 const getRankingSnapshotDateKey = (date = new Date()) => {
     const formatter = new Intl.DateTimeFormat('en-US', {
@@ -673,6 +679,7 @@ const getRankings = async (req, res) => {
     const publicLimit = (type === 'active' || type === 'progress') ? 5 : 10;
     const windowDays = Math.min(90, Math.max(7, Number(req.query?.windowDays || 30)));
     const currentUserId = Number(req.user?.id || 0) || null;
+    const forceRefresh = req?._forceRankingRefresh === true;
     const NEWBIE_VERIFIED_THRESHOLD = 10;
     const NEWBIE_LEVEL_MAX = 4;
     const MENTOR_LEVEL_GAP = 2;
@@ -705,7 +712,7 @@ const getRankings = async (req, res) => {
             }
         }
 
-        if (cachedSnapshot?.ranked_all && isRankingSnapshotFresh(cachedSnapshot.generated_at)) {
+        if (!forceRefresh && cachedSnapshot?.ranked_all && isRankingSnapshotFresh(cachedSnapshot.generated_at)) {
             const visibilityUsers = await knex('Users').select('Id', 'is_ranking_public');
             const visibilityByUserId = buildRankingVisibilityMap(visibilityUsers);
             const cachedAt = dayjs(cachedSnapshot.generated_at);
@@ -1129,6 +1136,100 @@ const getRankings = async (req, res) => {
         return res.status(500).json({ success: false, message: 'Failed to get rankings' });
     }
 };
+
+const parseRankingSnapshotOrigin = (origin) => {
+    const fallback = {
+        protocol: 'http',
+        host: 'localhost:3000'
+    };
+    const rawOrigin = String(origin || '').trim();
+    if (!rawOrigin) return fallback;
+
+    try {
+        const parsed = new URL(rawOrigin);
+        return {
+            protocol: parsed.protocol.replace(':', '') || fallback.protocol,
+            host: parsed.host || fallback.host
+        };
+    } catch (_) {
+        return fallback;
+    }
+};
+
+const runInternalRankingBuild = async ({ type, genderFilter, windowDays, origin }) => {
+    const req = {
+        query: {
+            type,
+            genderFilter,
+            windowDays
+        },
+        user: null,
+        _forceRankingRefresh: true,
+        ...parseRankingSnapshotOrigin(origin),
+        get(headerName) {
+            if (String(headerName || '').toLowerCase() === 'host') {
+                return this.host;
+            }
+            return undefined;
+        }
+    };
+
+    return new Promise((resolve, reject) => {
+        let statusCode = 200;
+        const res = {
+            status(code) {
+                statusCode = Number(code) || 500;
+                return this;
+            },
+            json(payload) {
+                if (statusCode >= 400 || payload?.success === false) {
+                    const message = payload?.message || `Ranking refresh failed (status ${statusCode})`;
+                    return reject(new Error(message));
+                }
+                return resolve(payload);
+            }
+        };
+
+        Promise.resolve(getRankings(req, res)).catch(reject);
+    });
+};
+
+const refreshRankingSnapshotsInBackground = async ({
+    origin,
+    windowDays = RANKING_SNAPSHOT_DEFAULT_WINDOW_DAYS
+} = {}) => {
+    const normalizedWindowDays = Math.min(90, Math.max(7, Number(windowDays || 30)));
+    let successCount = 0;
+    let failureCount = 0;
+
+    for (const type of RANKING_SNAPSHOT_PRECOMPUTE_TYPES) {
+        for (const genderFilter of RANKING_SNAPSHOT_PRECOMPUTE_GENDER_FILTERS) {
+            try {
+                await runInternalRankingBuild({
+                    type,
+                    genderFilter,
+                    windowDays: normalizedWindowDays,
+                    origin
+                });
+                successCount += 1;
+            } catch (error) {
+                failureCount += 1;
+                console.error(
+                    `Ranking snapshot refresh failed (type=${type}, gender=${genderFilter}):`,
+                    error.message
+                );
+            }
+        }
+    }
+
+    return {
+        totalCount: RANKING_SNAPSHOT_PRECOMPUTE_TYPES.length * RANKING_SNAPSHOT_PRECOMPUTE_GENDER_FILTERS.length,
+        successCount,
+        failureCount,
+        windowDays: normalizedWindowDays
+    };
+};
+
 const rating = async (req, res) => {
     const { level } = req.body;
     const gender = normalizeUserGender(req.body?.gender);
@@ -1492,6 +1593,7 @@ module.exports = {
     getFacebookAuthUrl,
     exchangeLoginCode,
     getRankings,
+    refreshRankingSnapshotsInBackground,
     updateRankingVisibility,
     updateGenderPreference,
     updateGenderPairingVisibility
